@@ -1,0 +1,10 @@
+data/*
+/dist/
+/hict_server.egg-info/
+/build/
+/.eggs/
+/.pytest_cache/
+__pycache__
+*.pyc
+**/*.pyc
+**/__pycache__

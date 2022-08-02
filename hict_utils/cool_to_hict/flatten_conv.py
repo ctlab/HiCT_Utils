@@ -1,7 +1,8 @@
+import argparse
 import copy
 import datetime
 import math
-from typing import Tuple
+from typing import Any, Dict, Tuple
 
 import h5py
 import numpy as np
@@ -21,14 +22,16 @@ def save_values_to_group(
         stripes: List[StripeDescriptor],
         dense_submatrix_size: np.int64,
 ) -> Tuple[np.int64, np.int64]:
-    (block_rows, block_cols, block_vals, block_offset, block_length, dense_blocks) = block_datasets
+    (block_rows, block_cols, block_vals, block_offset,
+     block_length, dense_blocks) = block_datasets
     block_count_in_row: np.int64 = len(blocks)
     row_stripe: StripeDescriptor = stripes[leftmost_block_index]
     block_row_count: np.int64 = row_stripe.stripe_length_bins
     for block_index in range(leftmost_block_index, block_count_in_row):
         col_stripe: StripeDescriptor = stripes[block_index]
         block = blocks[block_index]
-        block_index_in_datasets: np.int64 = leftmost_block_index * block_count_in_row + block_index
+        block_index_in_datasets: np.int64 = leftmost_block_index * \
+            block_count_in_row + block_index
         # Do not store empty blocks:
         block_nonzero_element_count = len(block[0])
         if block_nonzero_element_count == 0:
@@ -42,15 +45,16 @@ def save_values_to_group(
 
         if (
                 (
-                        block_row_count == dense_submatrix_size
+                    block_row_count == dense_submatrix_size
                 )
                 and
                 (
-                        block_col_count == dense_submatrix_size
+                    block_col_count == dense_submatrix_size
                 )
                 and
                 (
-                        block_nonzero_element_count >= ((block_row_count * block_col_count) // 2)
+                    block_nonzero_element_count >= (
+                        (block_row_count * block_col_count) // 2)
                 )
         ):
             # Save as a dense matrix
@@ -71,9 +75,12 @@ def save_values_to_group(
         else:
             # Save as sparse matrix
             block_offset[block_index_in_datasets] = current_sparse_offset
-            block_rows[current_sparse_offset:current_sparse_offset + block_nonzero_element_count] = block[0]
-            block_cols[current_sparse_offset:current_sparse_offset + block_nonzero_element_count] = block[1]
-            block_vals[current_sparse_offset:current_sparse_offset + block_nonzero_element_count] = block[2]
+            block_rows[current_sparse_offset:current_sparse_offset +
+                       block_nonzero_element_count] = block[0]
+            block_cols[current_sparse_offset:current_sparse_offset +
+                       block_nonzero_element_count] = block[1]
+            block_vals[current_sparse_offset:current_sparse_offset +
+                       block_nonzero_element_count] = block[2]
             current_sparse_offset += block_nonzero_element_count
     return current_sparse_offset, current_dense_offset
 
@@ -94,10 +101,14 @@ def dump_stripe_data(
         path_to_name_and_length: str = '/chroms/',
         additional_dataset_creation_args: Optional[dict] = None
 ) -> List[StripeDescriptor]:
-    assert len(src_file[f'{path_to_name_and_length}/length']) == len(src_file[f'{path_to_name_and_length}/name'])
-    stripes_group: h5py.Group = dst_file.create_group(f'/resolutions/{resolution}/stripes')
-    contig_start_bins: h5py.Dataset = src_file[f'/resolutions/{resolution}/indexes/chrom_offset'].astype(np.int64)
-    contig_length_bins_ds: np.ndarray = contig_start_bins[1:] - contig_start_bins[:-1]
+    assert len(src_file[f'{path_to_name_and_length}/length']
+               ) == len(src_file[f'{path_to_name_and_length}/name'])
+    stripes_group: h5py.Group = dst_file.create_group(
+        f'/resolutions/{resolution}/stripes')
+    contig_start_bins: h5py.Dataset = src_file[f'/resolutions/{resolution}/indexes/chrom_offset'].astype(
+        np.int64)
+    contig_length_bins_ds: np.ndarray = contig_start_bins[1:] - \
+        contig_start_bins[:-1]
 
     stripe_descriptors: List[StripeDescriptor] = []
     stripe_index: np.int64 = 0
@@ -106,21 +117,24 @@ def dump_stripe_data(
     contigs_count: np.int64 = len(contig_length_bins_ds)
     for contig_id in range(0, contigs_count):
         contig_length_bins: np.int64 = contig_length_bins_ds[contig_id]
-        contig_part_count: np.int64 = math.ceil(contig_length_bins / submatrix_size)
+        contig_part_count: np.int64 = math.ceil(
+            contig_length_bins / submatrix_size)
         contig_length_bp: np.int64 = contig_id_to_contig_length_bp[contig_id]
 
         stripe_descriptors.extend((
             StripeDescriptor.make_stripe_descriptor(
                 stripe_index + contig_part_id,
-                min(submatrix_size, contig_length_bins - contig_part_id * submatrix_size),
-                min(submatrix_size * resolution, contig_length_bp - contig_part_id * submatrix_size * resolution),
+                min(submatrix_size, contig_length_bins -
+                    contig_part_id * submatrix_size),
+                min(submatrix_size * resolution, contig_length_bp -
+                    contig_part_id * submatrix_size * resolution),
                 ContigDescriptor.make_contig_descriptor(
                     contig_id,
                     ContigDirection.FORWARD,
                     contig_length_bp,
                     {resolution: contig_length_bins},
                     {resolution: ContigHideType.AUTO_SHOWN},
-                    None
+                    {}
                 )
             )
 
@@ -139,7 +153,8 @@ def dump_stripe_data(
     stripes_group.create_dataset('stripe_length_bp', data=[stripe.stripe_length_bp for stripe in stripe_descriptors],
                                  dtype=np.int64, **additional_dataset_creation_args)
     stripes_group.create_dataset('stripes_contig_id',
-                                 data=[stripe.contig_descriptor.contig_id for stripe in stripe_descriptors],
+                                 data=[
+                                     stripe.contig_descriptor.contig_id for stripe in stripe_descriptors],
                                  dtype=np.int64,
                                  **additional_dataset_creation_args)
     return stripe_descriptors
@@ -155,11 +170,18 @@ def dump_contig_data(
     # TODO: Maybe in .mcool different contigs may be present/not present at different resolutions
     anyresolution: np.int64 = resolutions[0]
     contig_info_group: h5py.Group = dst_file.create_group(f'/contig_info/')
-    contig_info_group.copy(src_file[f'{path_to_name_and_length}/name'], 'contig_name')
+    print(
+        f"src file keys: {list(src_file.keys())}", flush=True)
+    print(f"pathtonameandlength: {path_to_name_and_length}", flush=True)
+    print(
+        f"pathtonameandlength keys: {list(src_file[f'{path_to_name_and_length}'].keys())}", flush=True)
+    contig_info_group.copy(
+        src_file[f'{path_to_name_and_length}/name'], 'contig_name')
 
     contig_count: np.int64 = len(contig_info_group['contig_name'])
 
-    src_contig_chrom_offset: h5py.Dataset = src_file[f'/resolutions/{anyresolution}/indexes/chrom_offset']
+    src_contig_chrom_offset: h5py.Dataset = src_file[
+        f'/resolutions/{anyresolution}/indexes/chrom_offset']
     src_bin_ends: h5py.Dataset = src_file[f'/resolutions/{anyresolution}/bins/end']
 
     if additional_dataset_creation_args is None:
@@ -168,7 +190,8 @@ def dump_contig_data(
     contig_id_to_contig_length_bp: np.ndarray
 
     if 'length' in src_file[f'/resolutions/{anyresolution}/chroms'].keys():
-        contig_info_group.copy(src_file[f'/resolutions/{anyresolution}/chroms/length'], 'contig_length_bp')
+        contig_info_group.copy(
+            src_file[f'/resolutions/{anyresolution}/chroms/length'], 'contig_length_bp')
         contig_id_to_contig_length_bp = src_file[f'/resolutions/{anyresolution}/chroms/length'][:]
     else:
         contig_length: np.ndarray = np.zeros(contig_count, dtype=np.int64)
@@ -181,7 +204,8 @@ def dump_contig_data(
         contig_id_to_contig_length_bp = contig_length[:]
 
     contig_info_group.create_dataset('contig_direction',
-                                     data=[ContigDirection.FORWARD.value for _ in range(0, contig_count)],
+                                     data=[ContigDirection.FORWARD.value for _ in range(
+                                         0, contig_count)],
                                      **additional_dataset_creation_args)
     contig_info_group.create_dataset('ordered_contig_ids', data=list(range(0, contig_count)),
                                      dtype=np.int64, **additional_dataset_creation_args)
@@ -189,13 +213,17 @@ def dump_contig_data(
                                      dtype=np.int64, **additional_dataset_creation_args)
 
     for resolution in resolutions:
-        contigs_group: h5py.Group = dst_file.create_group(f'/resolutions/{resolution}/contigs')
-        contig_start_bins: h5py.Dataset = src_file[f'/resolutions/{resolution}/indexes/chrom_offset'].astype(np.int64)
-        contig_length_bins_ds: np.ndarray = contig_start_bins[1:] - contig_start_bins[:-1]
+        contigs_group: h5py.Group = dst_file.create_group(
+            f'/resolutions/{resolution}/contigs')
+        contig_start_bins: h5py.Dataset = src_file[f'/resolutions/{resolution}/indexes/chrom_offset'].astype(
+            np.int64)
+        contig_length_bins_ds: np.ndarray = contig_start_bins[1:] - \
+            contig_start_bins[:-1]
         contigs_group.create_dataset('contig_length_bins', data=contig_length_bins_ds, dtype=np.int64,
                                      **additional_dataset_creation_args)
         contigs_group.create_dataset('contig_hide_type',
-                                     data=[ContigHideType.AUTO_SHOWN.value for _ in range(0, contig_count)],
+                                     data=[ContigHideType.AUTO_SHOWN.value for _ in range(
+                                         0, contig_count)],
                                      dtype=np.int8, **additional_dataset_creation_args)
 
     return contig_id_to_contig_length_bp
@@ -220,7 +248,8 @@ def cool_flatten_convert(
 
     with h5py.File(name=src_file_path, mode='r') as src_file:
         if resolutions is None:
-            resolutions = [np.int64(sdn) for sdn in filter(lambda s: s.isnumeric(), src_file['resolutions'].keys())]
+            resolutions = [np.int64(sdn) for sdn in filter(
+                lambda s: s.isnumeric(), src_file['resolutions'].keys())]
         with h5py.File(name=dst_file_path, mode='w') as dst_file:
             contig_id_to_contig_length_bp: np.ndarray = dump_contig_data(
                 src_file,
@@ -240,10 +269,14 @@ def cool_flatten_convert(
                     get_name_and_length_path(resolution),
                     additional_dataset_creation_args
                 )
-                res_group: h5py.Group = dst_file.create_group(f'resolutions/{resolution}/treap_coo')
-                res_group.attrs.create(name='dense_submatrix_size', data=submatrix_size)
-                res_group.attrs.create(name='hdf5_max_chunk_size', data=hdf5_max_chunk_size)
-                src_bins_count = len(src_file[f'resolutions/{resolution}/bins/end'])
+                res_group: h5py.Group = dst_file.create_group(
+                    f'resolutions/{resolution}/treap_coo')
+                res_group.attrs.create(
+                    name='dense_submatrix_size', data=submatrix_size)
+                res_group.attrs.create(
+                    name='hdf5_max_chunk_size', data=hdf5_max_chunk_size)
+                src_bins_count = len(
+                    src_file[f'resolutions/{resolution}/bins/end'])
                 src_pixels = src_file[f'resolutions/{resolution}/pixels']
                 src_pixel_row: h5py.Dataset = src_pixels['bin1_id']
                 src_pixel_col: h5py.Dataset = src_pixels['bin2_id']
@@ -263,10 +296,12 @@ def cool_flatten_convert(
                 stripe_start_indices: np.ndarray = np.cumsum([0] + [s.stripe_length_bins for s in stripes],
                                                              dtype=np.int64)
                 # stripe_start_indices: h5py.Dataset = src_file[f'resolutions/{resolution}/indexes/chrom_offset']
-                all_rows_start_indices: h5py.Dataset = src_file[f'resolutions/{resolution}/indexes/bin1_offset']
+                all_rows_start_indices: h5py.Dataset = src_file[
+                    f'resolutions/{resolution}/indexes/bin1_offset']
 
                 fetch_size: np.int64 = len(src_pixel_row)
-                fetchblock_count: np.int64 = fetch_size // max_fetch_size + min(1, fetch_size % max_fetch_size)
+                fetchblock_count: np.int64 = fetch_size // max_fetch_size + \
+                    min(1, fetch_size % max_fetch_size)
 
                 print(
                     f"bins_count: {src_bins_count}, "
@@ -286,7 +321,8 @@ def cool_flatten_convert(
                 # current_row_stripe_start_row <= row < current_row_stripe_max_row
                 pixeltable_start_position: np.int64 = 0
 
-                ds_creation_args: dict = copy.deepcopy(additional_dataset_creation_args)
+                ds_creation_args: dict = copy.deepcopy(
+                    additional_dataset_creation_args)
                 ds_creation_args['chunks'] = True
 
                 block_rows: h5py.Dataset = res_group.create_dataset(
@@ -327,16 +363,20 @@ def cool_flatten_convert(
                 block_datasets: Tuple[Dataset, Dataset, Dataset, Dataset, Dataset, Dataset] = (
                     block_rows, block_cols, block_vals, block_offset, block_length, dense_blocks)
 
-                res_group.attrs.create(name='stripes_count', data=stripes_count)
+                res_group.attrs.create(
+                    name='stripes_count', data=stripes_count)
 
                 current_sparse_offset: np.int64 = 0
                 current_dense_offset: np.int64 = 0
 
                 for pixel_row_fetchblock, pixel_col_fetchblock, pixel_cnt_fetchblock in (
                         (
-                                src_pixel_row[i * max_fetch_size: min((1 + i) * max_fetch_size, fetch_size)],
-                                src_pixel_col[i * max_fetch_size: min((1 + i) * max_fetch_size, fetch_size)],
-                                src_pixel_val[i * max_fetch_size: min((1 + i) * max_fetch_size, fetch_size)]
+                            src_pixel_row[i * max_fetch_size: min(
+                                (1 + i) * max_fetch_size, fetch_size)],
+                            src_pixel_col[i * max_fetch_size: min(
+                                (1 + i) * max_fetch_size, fetch_size)],
+                            src_pixel_val[i * max_fetch_size: min(
+                                (1 + i) * max_fetch_size, fetch_size)]
                         ) for i in range(0, fetchblock_count)
                 ):
                     minimum_row_in_fetchblock: np.int64 = pixel_row_fetchblock[0]
@@ -350,10 +390,11 @@ def cool_flatten_convert(
                     #     side='left'
                     # )
                     row_start_indices: np.ndarray = all_rows_start_indices[
-                                                    minimum_row_in_fetchblock:2 + maximum_row_in_fetchblock
-                                                    ] - pixeltable_start_position
+                        minimum_row_in_fetchblock:2 + maximum_row_in_fetchblock
+                    ] - pixeltable_start_position
                     if row_start_indices[0] < 0:
-                        first_zero_index: np.int64 = np.searchsorted(row_start_indices, 0, side='left')
+                        first_zero_index: np.int64 = np.searchsorted(
+                            row_start_indices, 0, side='left')
                         row_start_indices[:first_zero_index] = 0
                         pass
                     pixeltable_start_position += len(pixel_row_fetchblock)
@@ -385,9 +426,11 @@ def cool_flatten_convert(
                         assert row_start_index >= 0
                         assert next_row_start_index >= 0
                         single_row_row: np.ndarray = pixel_row_fetchblock[
-                                                     row_start_index:next_row_start_index] - current_row_stripe_start_row
-                        single_row_col: np.ndarray = pixel_col_fetchblock[row_start_index:next_row_start_index]
-                        single_row_cnt: np.ndarray = pixel_cnt_fetchblock[row_start_index:next_row_start_index]
+                            row_start_index:next_row_start_index] - current_row_stripe_start_row
+                        single_row_col: np.ndarray = pixel_col_fetchblock[
+                            row_start_index:next_row_start_index]
+                        single_row_cnt: np.ndarray = pixel_cnt_fetchblock[
+                            row_start_index:next_row_start_index]
                         assert max(single_row_row) == min(single_row_row)
                         if not is_sorted(single_row_col):
                             # print("AAAA")
@@ -409,15 +452,19 @@ def cool_flatten_convert(
                                 row_ids = single_row_row[block_in_row_start_index:next_block_in_row_start_index]
                                 assert 0 <= max(row_ids) < submatrix_size
                                 assert 0 <= min(row_ids) < submatrix_size
-                                stripe_data[current_row_stripe_id + j][0].extend(row_ids)
+                                stripe_data[current_row_stripe_id +
+                                            j][0].extend(row_ids)
                                 column_ids_original = single_row_col[
-                                                      block_in_row_start_index:next_block_in_row_start_index
-                                                      ]
+                                    block_in_row_start_index:next_block_in_row_start_index
+                                ]
                                 column_ids_in_block = column_ids_original - stripe_start_indices[
                                     current_row_stripe_id + j]
-                                assert 0 <= max(column_ids_in_block) < submatrix_size
-                                assert 0 <= min(column_ids_in_block) < submatrix_size
-                                stripe_data[current_row_stripe_id + j][1].extend(column_ids_in_block)
+                                assert 0 <= max(
+                                    column_ids_in_block) < submatrix_size
+                                assert 0 <= min(
+                                    column_ids_in_block) < submatrix_size
+                                stripe_data[current_row_stripe_id +
+                                            j][1].extend(column_ids_in_block)
                                 stripe_data[current_row_stripe_id + j][2].extend(
                                     single_row_cnt[block_in_row_start_index:next_block_in_row_start_index])
 
@@ -434,63 +481,55 @@ def cool_flatten_convert(
                 dst_file.flush()
 
 
-# cool_hires_convert('../../data/chm13_1k.cool', '../../data/z_chm13_1k.hires.hdf5', lambda r: f'/chroms')
-# cool_hires_convert("../../data/manual.cool", '../../data/manual.hdf5', lambda r: f'/resolutions/{r}/chroms',
-#                    additional_dataset_creation_args={
-#                        'compression': 'lzf',
-#                        'shuffle': True,
-#                    })
-# cool_flatten_convert('../../data/mat18_100k.cool', '../../data/mat18_100k.hdf5',
+# cool_flatten_convert('../../data/mat18_100k.zoom_2n.mcool', '../../data/mat18_100k.hidden.zoom_2n.hdf5',
 #                      lambda r: f'/resolutions/{r}/chroms',
 #                      additional_dataset_creation_args={
 #                          'compression': 'lzf',
 #                          'shuffle': True,
 #                      })
-cool_flatten_convert('../../data/mat18_100k.zoom_2n.mcool', '../../data/mat18_100k.hidden.zoom_2n.hdf5',
-                     lambda r: f'/resolutions/{r}/chroms',
-                     additional_dataset_creation_args={
-                         'compression': 'lzf',
-                         'shuffle': True,
-                     })
-# cool_flatten_convert('../../data/coluzzii.mcool', '../../data/coluzzii.hidden.mcool.hdf5',
-#                      lambda r: f'/resolutions/{r}/chroms',
-#                      additional_dataset_creation_args={
-#                          'compression': 'lzf',
-#                          'shuffle': True,
-#                      })
-# cool_hires_convert('../../data/mat18_100k.zoom_2n.cool', '../../data/mat18_100k.zoom_2n.hdf5',
-#                    lambda r: f'/resolutions/{r}/chroms',
-#                    additional_dataset_creation_args={
-#                        'compression': 'lzf',
-#                        'shuffle': True,
-#                    })
-# cool_hires_convert('../../data/4DNFI4E2U77R.zoom_2n.mcool', '../../data/4DNFI4E2U77R.zoom_2n.hdf5',
-#                    lambda r: f'/resolutions/{r}/chroms',
-#                    additional_dataset_creation_args={
-#                        'compression': 'lzf',
-#                        'shuffle': True,
-#                    })
-# cool_hires_convert('../../data/g3_male_fusion.mcool', '../../data/g3_male_fusion.hdf5',
-#                    lambda r: f'/resolutions/{r}/chroms',
-#                    additional_dataset_creation_args={
-#                        'compression': 'lzf',
-#                        'shuffle': True,
-#                    })
-# cool_hires_convert(
-#     '../../data/mat18_100k.zoom_2n.cool',
-#     '../../data/mat18_100k.zoom_2n.hdf5',
-#     lambda r: f'/resolutions/{r}/chroms',
-#     additional_dataset_creation_args={
-#         'compression': 'lzf',
-#         'shuffle': True,
-#     }
-# )
-# cool_hires_convert('../../data/4DNFI4E2U77R.mcool', '../../data/z_4DNFI4E2U77R.hires.hdf5',
-#                    lambda r: f'/resolutions/{r}/chroms', resolutions=[1000],
-#                    additional_dataset_creation_args={
-#                        'compression': 'gzip',
-#                        'compression_opts': 9
-#                    }
-#                    )
-# cool_hires_convert('../../data/4DNFI4E2U77R.zoomed_2n.mcool', '../../data/z_4DNFI4E2U77R.zoomed_2n.hires.hdf5', lambda r: f'/resolutions/{r}/chroms')
-# cool_hires_convert('../../data/4DNFI4E2U77R.mcool', '../../data/z_4DNFI4E2U77R.multilowres.hires.hdf5', lambda r: f'/resolutions/{r}/chroms', resolutions=[10000000, 5000000, 2500000, 1000000, 100000, 10000, 25000, 250000, 50000, 500000])
+
+
+def main(cmdline: Optional[List[Any]]):
+    def cool_file_checker(parser: argparse.ArgumentParser, filename: str):
+        try:
+            with h5py.File(name=filename, mode='r') as f:
+                return filename
+        except IOError:
+            parser.error(f"{filename} does not point to correct HDF5 file")
+
+    parser = argparse.ArgumentParser(
+        description="Convert .mcool file into HiCT format", prefix_chars="-+"
+    )
+    parser.add_argument("-c", "--compression", default="lzf", choices=[
+                        "lzf", "gzip", "none"], help="Select HDF5 dataset compression algorithm")
+    parser.add_argument("-n", "--no-shuffle", action="store_false",
+                        help="Disable HDF5 shuffle filter", dest="shuffle")
+    parser.add_argument("-r", "--resolutions", nargs='*',
+                        type=int, help="Select resolutions that should be converted (if not specified, converts all that are found)", dest="resolutions")
+    parser.add_argument("input", help="Input file path",
+                        type=lambda f: cool_file_checker(parser, f))
+    parser.add_argument(
+        "-o", "--output", help="Output file path", dest="output")
+
+    args = (
+        parser.parse_args(cmdline)
+        if cmdline is not None
+        else parser.parse_args()
+    )
+
+    additional_dataset_creation_args: Dict = {
+        'shuffle': args.shuffle,
+    }
+    if (args.compression.lower() != "none"):
+        additional_dataset_creation_args['compression'] = args.compression.lower(
+        )
+
+    print(f"args object: {args}")
+
+    cool_flatten_convert(
+        args.input,
+        args.output if args.output is not None else f"{args.input}.hict.hdf5",
+        lambda r: f'/resolutions/{str(r)}/chroms',
+        resolutions=[np.int64(r) for r in args.resolutions],
+        additional_dataset_creation_args=additional_dataset_creation_args
+    )
