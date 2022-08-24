@@ -530,6 +530,9 @@ def main(cmdline: Optional[List[Any]]):
         args.input,
         args.output if args.output is not None else f"{args.input}.hict.hdf5",
         lambda r: f'/resolutions/{str(r)}/chroms',
-        resolutions=[np.int64(r) for r in args.resolutions],
+        resolutions=[
+            np.int64(r)
+            for r in args.resolutions
+        ] if args.resolutions is not None else None,
         additional_dataset_creation_args=additional_dataset_creation_args
     )
