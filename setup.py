@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name='hict_utils',
-    version='1.0rc1.dev1',
+    version='0.1.1rc1',
     packages=['hict_utils', 'hict_utils.cool_to_hict'],
     url='https://genome.ifmo.ru',
     license='',
@@ -10,7 +10,7 @@ setup(
     author_email='',
     description='Preliminary version of utilities for HiCT interactive Hi-C scaffolding tool.',
     install_requires=[
-        'hict~=1.0rc1.dev1',
+        'hict~=0.1.1rc1',
         'h5py~=3.7.0',
         'scipy~=1.8.1',
         'numpy~=1.23.1',

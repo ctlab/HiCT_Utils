@@ -1,6 +1,6 @@
 data/*
 /dist/
-/hict_server.egg-info/
+/hict_utils.egg-info/
 /build/
 /.eggs/
 /.pytest_cache/
