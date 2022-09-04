@@ -1,4 +1,4 @@
-hict~=1.0rc1.dev1
+hict~=0.1.1rc1.dev1
 h5py~=3.7.0
 scipy~=1.8.1
 numpy~=1.23.1
