@@ -115,7 +115,7 @@ def dump_stripe_data(
     stripe_index: np.int64 = 0
 
     # bins_count: np.int64 = len(bins_group['chrom'])
-    bin_weights: Optional[h5py.Dataset] = bins_group['weights'] if 'weights' in bins_group.keys(
+    bin_weights: Optional[h5py.Dataset] = bins_group['weight'] if 'weight' in bins_group.keys(
     ) else None
 
     start_bin: np.int64 = np.int64(0)
@@ -169,7 +169,13 @@ def dump_stripe_data(
         stripes_group.create_dataset('stripes_bin_weights',
                                     shape=(len(stripe_descriptors), submatrix_size),
                                     maxshape=(None, submatrix_size),
-                                    data=[stripe.bin_weights for stripe in stripe_descriptors],
+                                    data=[
+                                        np.pad(
+                                            stripe.bin_weights, 
+                                            [(0, submatrix_size-len(stripe.bin_weights))], 
+                                            mode='constant', 
+                                            constant_values=0
+                                        ) for stripe in stripe_descriptors],
                                     dtype=np.float64,
                                     **additional_dataset_creation_args)
     return stripe_descriptors
