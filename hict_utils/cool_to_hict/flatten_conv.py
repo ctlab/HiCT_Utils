@@ -2,7 +2,7 @@ import argparse
 import copy
 import datetime
 import math
-from typing import Any, Dict, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import h5py
 import numpy as np
@@ -500,14 +500,6 @@ def cool_flatten_convert(
                 )
                 clear_blocks(stripe_data, current_row_stripe_id)
                 dst_file.flush()
-
-
-# cool_flatten_convert('../../data/mat18_100k.zoom_2n.mcool', '../../data/mat18_100k.hidden.zoom_2n.hdf5',
-#                      lambda r: f'/resolutions/{r}/chroms',
-#                      additional_dataset_creation_args={
-#                          'compression': 'lzf',
-#                          'shuffle': True,
-#                      })
 
 
 def main(cmdline: Optional[List[Any]]):
