@@ -2,7 +2,7 @@ import argparse
 import copy
 import datetime
 import math
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Union
 
 import h5py
 import numpy as np
@@ -105,6 +105,7 @@ def dump_stripe_data(
                ) == len(src_file[f'{path_to_name_and_length}/name'])
     stripes_group: h5py.Group = dst_file.create_group(
         f'/resolutions/{resolution}/stripes')
+    bins_group: h5py.Group = src_file[f'/resolutions/{resolution}/bins']
     contig_start_bins: h5py.Dataset = src_file[f'/resolutions/{resolution}/indexes/chrom_offset'].astype(
         np.int64)
     contig_length_bins_ds: np.ndarray = contig_start_bins[1:] - \
@@ -113,6 +114,11 @@ def dump_stripe_data(
     stripe_descriptors: List[StripeDescriptor] = []
     stripe_index: np.int64 = 0
 
+    # bins_count: np.int64 = len(bins_group['chrom'])
+    bin_weights: Optional[h5py.Dataset] = bins_group['weight'] if 'weight' in bins_group.keys(
+    ) else None
+
+    start_bin: np.int64 = np.int64(0)
     # Split contigs into blocks
     contigs_count: np.int64 = len(contig_length_bins_ds)
     for contig_id in range(0, contigs_count):
@@ -135,7 +141,9 @@ def dump_stripe_data(
                     {resolution: contig_length_bins},
                     {resolution: ContigHideType.AUTO_SHOWN},
                     {}
-                )
+                ),
+                np.array(bin_weights[start_bin:start_bin+min(submatrix_size, contig_length_bins -
+                         contig_part_id * submatrix_size)]) if bin_weights is not None else None
             )
 
             for contig_part_id in range(0, contig_part_count)
@@ -157,6 +165,19 @@ def dump_stripe_data(
                                      stripe.contig_descriptor.contig_id for stripe in stripe_descriptors],
                                  dtype=np.int64,
                                  **additional_dataset_creation_args)
+    if bin_weights is not None:
+        stripes_group.create_dataset('stripes_bin_weights',
+                                    shape=(len(stripe_descriptors), submatrix_size),
+                                    maxshape=(None, submatrix_size),
+                                    data=[
+                                        np.pad(
+                                            stripe.bin_weights, 
+                                            [(0, submatrix_size-len(stripe.bin_weights))], 
+                                            mode='constant', 
+                                            constant_values=0
+                                        ) for stripe in stripe_descriptors],
+                                    dtype=np.float64,
+                                    **additional_dataset_creation_args)
     return stripe_descriptors
 
 
