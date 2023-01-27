@@ -92,6 +92,17 @@ def clear_blocks(blocks: List[Tuple[List, List, List]], current_row_stripe_id: n
         blocks[block_index][2].clear()
 
 
+def dump_contig_data(
+        src_file: h5py.File,
+        dst_file: h5py.File,
+        resolution: np.int64,
+        contig_id_to_contig_length_bp: np.ndarray,
+        path_to_name_and_length: str = '/chroms/',
+        additional_dataset_creation_args: Optional[dict] = None
+) -> List[ContigDescriptor]:
+    pass
+
+
 def dump_stripe_data(
         src_file: h5py.File,
         dst_file: h5py.File,
@@ -106,79 +117,60 @@ def dump_stripe_data(
     stripes_group: h5py.Group = dst_file.create_group(
         f'/resolutions/{resolution}/stripes')
     bins_group: h5py.Group = src_file[f'/resolutions/{resolution}/bins']
-    contig_start_bins: h5py.Dataset = src_file[f'/resolutions/{resolution}/indexes/chrom_offset'].astype(
-        np.int64)
-    contig_length_bins_ds: np.ndarray = contig_start_bins[1:] - \
-        contig_start_bins[:-1]
-
-    stripe_descriptors: List[StripeDescriptor] = []
-    stripe_index: np.int64 = 0
+    bin_id_to_initial_contig_id: h5py.Dataset = bins_group['chrom']
+    # contig_start_bins: h5py.Dataset = src_file[f'/resolutions/{resolution}/indexes/chrom_offset'].astype(
+    #     np.int64)
+    # contig_length_bins_ds: np.ndarray = contig_start_bins[1:] - \
+    #     contig_start_bins[:-1]
 
     # bins_count: np.int64 = len(bins_group['chrom'])
     bin_weights: Optional[h5py.Dataset] = bins_group['weight'] if 'weight' in bins_group.keys(
     ) else None
 
-    start_bin: np.int64 = np.int64(0)
-    # Split contigs into blocks
-    contigs_count: np.int64 = len(contig_length_bins_ds)
-    for contig_id in range(0, contigs_count):
-        contig_length_bins: np.int64 = contig_length_bins_ds[contig_id]
-        contig_part_count: np.int64 = math.ceil(
-            contig_length_bins / submatrix_size)
-        contig_length_bp: np.int64 = contig_id_to_contig_length_bp[contig_id]
+    bin_count = len(bin_id_to_initial_contig_id)
+    stripe_count: np.int64 = np.int64(
+        (bin_count // submatrix_size) + min(bin_count % submatrix_size, 1)
+    )
 
-        stripe_descriptors.extend((
-            StripeDescriptor.make_stripe_descriptor(
-                stripe_index + contig_part_id,
-                min(submatrix_size, contig_length_bins -
-                    contig_part_id * submatrix_size),
-                min(submatrix_size * resolution, contig_length_bp -
-                    contig_part_id * submatrix_size * resolution),
-                ContigDescriptor.make_contig_descriptor(
-                    contig_id,
-                    ContigDirection.FORWARD,
-                    contig_length_bp,
-                    {resolution: contig_length_bins},
-                    {resolution: ContigHideType.AUTO_SHOWN},
-                    {}
-                ),
-                np.array(bin_weights[start_bin:start_bin+min(submatrix_size, contig_length_bins -
-                         contig_part_id * submatrix_size)]) if bin_weights is not None else None
-            )
-
-            for contig_part_id in range(0, contig_part_count)
-        ))
-
-        stripe_index += contig_part_count
+    stripes: List[StripeDescriptor] = [
+        StripeDescriptor.make_stripe_descriptor(
+            stripe_index,
+            min(submatrix_size, bin_count - stripe_index*submatrix_size),
+            np.array(
+                bin_weights[
+                    (stripe_index*submatrix_size):
+                        min((1+stripe_index)*submatrix_size, bin_count)
+                ]
+            ) if bin_weights is not None else np.ones(submatrix_size, dtype=np.float64)
+        )
+        for stripe_index in range(stripe_count)
+    ]
 
     if additional_dataset_creation_args is None:
         additional_dataset_creation_args = {}
-    stripes_group.create_dataset('ordered_stripe_ids', data=[stripe.stripe_id for stripe in stripe_descriptors],
-                                 dtype=np.int64, **additional_dataset_creation_args)
     stripes_group.create_dataset('stripe_length_bins',
-                                 data=[stripe.stripe_length_bins for stripe in stripe_descriptors], dtype=np.int64,
+                                 data=[stripe.stripe_length_bins for stripe in stripes], dtype=np.int64,
                                  **additional_dataset_creation_args)
-    stripes_group.create_dataset('stripe_length_bp', data=[stripe.stripe_length_bp for stripe in stripe_descriptors],
-                                 dtype=np.int64, **additional_dataset_creation_args)
     stripes_group.create_dataset('stripes_contig_id',
                                  data=[
-                                     stripe.contig_descriptor.contig_id for stripe in stripe_descriptors],
+                                     stripe.contig_descriptor.contig_id for stripe in stripes],
                                  dtype=np.int64,
                                  **additional_dataset_creation_args)
-    if bin_weights is not None:
-        stripes_group.create_dataset('stripes_bin_weights',
-                                    shape=(len(stripe_descriptors), submatrix_size),
-                                    maxshape=(None, submatrix_size),
-                                    data=[
-                                        np.pad(
-                                            stripe.bin_weights, 
-                                            [(0, submatrix_size-len(stripe.bin_weights))], 
-                                            mode='constant', 
-                                            constant_values=0
-                                        ) for stripe in stripe_descriptors],
-                                    dtype=np.float64,
-                                    **additional_dataset_creation_args)
-    return stripe_descriptors
+    stripes_group.create_dataset('stripes_bin_weights',
+                                 shape=(len(stripes),
+                                        submatrix_size),
+                                 maxshape=(None, submatrix_size),
+                                 data=[
+                                     np.pad(
+                                         stripe.bin_weights,
+                                         [(0, submatrix_size -
+                                           len(stripe.bin_weights))],
+                                         mode='constant',
+                                         constant_values=1.0
+                                     ) for stripe in stripes],
+                                 dtype=np.float64,
+                                 **additional_dataset_creation_args)
+    return stripes
 
 
 def dump_contig_data(
@@ -186,16 +178,17 @@ def dump_contig_data(
         dst_file: h5py.File,
         path_to_name_and_length: str,
         resolutions: List[np.int64],
+        stripes: Dict[np.int64, List[StripeDescriptor]],
         additional_dataset_creation_args: Optional[dict] = None
 ) -> np.ndarray:
     # TODO: Maybe in .mcool different contigs may be present/not present at different resolutions
     anyresolution: np.int64 = resolutions[0]
-    contig_info_group: h5py.Group = dst_file.create_group(f'/contig_info/')
-    print(
-        f"src file keys: {list(src_file.keys())}", flush=True)
-    print(f"pathtonameandlength: {path_to_name_and_length}", flush=True)
-    print(
-        f"pathtonameandlength keys: {list(src_file[f'{path_to_name_and_length}'].keys())}", flush=True)
+    contig_info_group: h5py.Group = dst_file.create_group('/contig_info/')
+    # print(
+    #     f"src file keys: {list(src_file.keys())}", flush=True)
+    # print(f"pathtonameandlength: {path_to_name_and_length}", flush=True)
+    # print(
+    #     f"pathtonameandlength keys: {list(src_file[f'{path_to_name_and_length}'].keys())}", flush=True)
     contig_info_group.copy(
         src_file[f'{path_to_name_and_length}/name'], 'contig_name')
 
