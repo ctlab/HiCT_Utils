@@ -172,7 +172,6 @@ def dump_stripe_data(
         dst_file: h5py.File,
         submatrix_size: np.int64,
         resolution: np.int64,
-        contig_id_to_contig_length_bp: np.ndarray,
         path_to_name_and_length: str = '/chroms/',
         additional_dataset_creation_args: Optional[dict] = None
 ) -> List[StripeDescriptor]:
@@ -215,11 +214,6 @@ def dump_stripe_data(
     stripes_group.create_dataset('stripe_length_bins',
                                  data=[stripe.stripe_length_bins for stripe in stripes], dtype=np.int64,
                                  **additional_dataset_creation_args)
-    stripes_group.create_dataset('stripes_contig_id',
-                                 data=[
-                                     stripe.contig_descriptor.contig_id for stripe in stripes],
-                                 dtype=np.int64,
-                                 **additional_dataset_creation_args)
     stripes_group.create_dataset('stripes_bin_weights',
                                  shape=(len(stripes),
                                         submatrix_size),
@@ -243,6 +237,7 @@ def dump_contig_data(
         path_to_name_and_length: str,
         resolutions: List[np.int64],
         stripes: Dict[np.int64, List[StripeDescriptor]],
+        submatrix_size: np.int64,
         additional_dataset_creation_args: Optional[dict] = None
 ) -> List[ContigDescriptor]:  # np.ndarray:
     # TODO: Maybe in .mcool different contigs may be present/not present at different resolutions
@@ -258,6 +253,9 @@ def dump_contig_data(
     contig_names: h5py.Dataset = src_file[f'{path_to_name_and_length}/name']
 
     contig_count: np.int64 = len(contig_info_group['contig_name'])
+
+    if additional_dataset_creation_args is None:
+        additional_dataset_creation_args = {}
 
     contig_info_group.create_dataset('contig_direction',
                                      data=[ContigDirection.FORWARD.value for _ in range(
@@ -310,14 +308,14 @@ def dump_contig_data(
             contig_length_bp=contig_id_to_contig_length_bp[contig_id],
             contig_length_at_resolution={
                 resolution: resolution_to_contig_length_bins[resolution][contig_id] for resolution in resolutions},
-            contig_presence_in_resolution={resolution: ContigHideType.AUTO_SHOWN if [
+            contig_presence_in_resolution={resolution: ContigHideType.AUTO_SHOWN if resolution_to_contig_length_bins[
                 resolution][contig_id] > 1 else ContigHideType.AUTO_HIDDEN for resolution in resolutions},
             atus={resolution: [
                 ATUDescriptor.make_atu_descriptor(
-                    stripe_descriptor=stripes[contig_part_id +
-                                              contig_start_bins_at_resolution[resolution][contig_id] // resolution],
+                    stripe_descriptor=stripes[resolution][contig_part_id + (contig_start_bins_at_resolution[resolution][contig_id] // resolution)],
                     start_index_in_stripe_incl=0,
-                    end_index_in_stripe_excl=0,
+                    end_index_in_stripe_excl=min(submatrix_size, resolution_to_contig_length_bins[resolution]
+                     [contig_id] - contig_part_id*submatrix_size),
                     direction=ATUDirection.FORWARD
                 ) for contig_part_id in range(
                     (resolution_to_contig_length_bins[resolution]
@@ -331,17 +329,18 @@ def dump_contig_data(
         ) for contig_id in range(0, contig_count)
     ]
 
+
     for resolution in resolutions:
         contigs_group: h5py.Group = dst_file.create_group(
             f'/resolutions/{resolution}/contigs')
-        atl_group: h5py.Group = dst_file.create_group(
+        atl_group: h5py.Group=dst_file.create_group(
             f'/resolutions/{resolution}/atl')
 
         contigs_group.create_dataset(
             'contig_length_bins',
-            data=[contig.contig_length_at_resolution[resolution]
+            data = [contig.contig_length_at_resolution[resolution]
                   for contig in contigs],
-            dtype=np.int64,
+            dtype = np.int64,
             **additional_dataset_creation_args
         )
         contigs_group.create_dataset(
@@ -414,13 +413,7 @@ def cool_flatten_convert(
             resolutions = [np.int64(sdn) for sdn in filter(
                 lambda s: s.isnumeric(), src_file['resolutions'].keys())]
         with h5py.File(name=dst_file_path, mode='w') as dst_file:
-            contigs, contig_id_to_contig_length_bp = dump_contig_data(
-                src_file,
-                dst_file,
-                get_name_and_length_path(resolutions[0]),
-                resolutions,
-                additional_dataset_creation_args
-            )
+            resolution_to_stripes: Dict[np.int64, List[StripeDescriptor]] = dict()
             for resolution in sorted(resolutions, reverse=True):
                 print(f"Resolution {resolution} out of {resolutions}")
                 stripes = dump_stripe_data(
@@ -428,10 +421,10 @@ def cool_flatten_convert(
                     dst_file,
                     submatrix_size,
                     resolution,
-                    contig_id_to_contig_length_bp,
                     get_name_and_length_path(resolution),
                     additional_dataset_creation_args
                 )
+                resolution_to_stripes[resolution] = stripes
                 res_group: h5py.Group = dst_file.create_group(
                     f'resolutions/{resolution}/treap_coo')
                 res_group.attrs.create(
@@ -534,9 +527,9 @@ def cool_flatten_convert(
 
                 for vstripe_l in range(0, stripes_count):
                     singlerowstripe_pixel_row, singlerowstripe_pixel_col, singlerowstripe_pixel_val = (
-                        src_pixel_row[all_rows_start_indices[vstripe_l*submatrix_size]                                      :all_rows_start_indices[(vstripe_l+1)*submatrix_size]],
-                        src_pixel_col[all_rows_start_indices[vstripe_l*submatrix_size]                                      :all_rows_start_indices[(vstripe_l+1)*submatrix_size]],
-                        src_pixel_val[all_rows_start_indices[vstripe_l*submatrix_size]                                      :all_rows_start_indices[(vstripe_l+1)*submatrix_size]],
+                        src_pixel_row[all_rows_start_indices[vstripe_l*submatrix_size]:all_rows_start_indices[min((vstripe_l+1)*submatrix_size, len(all_rows_start_indices)-1)]],
+                        src_pixel_col[all_rows_start_indices[vstripe_l*submatrix_size]:all_rows_start_indices[min((vstripe_l+1)*submatrix_size, len(all_rows_start_indices)-1)]],
+                        src_pixel_val[all_rows_start_indices[vstripe_l*submatrix_size]:all_rows_start_indices[min((vstripe_l+1)*submatrix_size, len(all_rows_start_indices)-1)]],
                     )
                     pixel_row_stripes = singlerowstripe_pixel_row // submatrix_size
                     pixel_col_stripes = singlerowstripe_pixel_col // submatrix_size
@@ -552,7 +545,7 @@ def cool_flatten_convert(
                     ), "Single row stripe contains pixels for multiple stripes??"
 
                     chunked_order = np.lexsort(
-                        (pixel_col_stripes, pixel_row_stripes, pixel_intra_stripe_row, pixel_intra_stripe_col))
+                        (pixel_intra_stripe_col, pixel_intra_stripe_row, pixel_row_stripes, pixel_col_stripes))
 
                     current_sparse_offset, current_dense_offset = save_indirect_block(
                         vstripe_l,
@@ -687,6 +680,17 @@ def cool_flatten_convert(
                 # clear_blocks(stripe_data, current_row_stripe_id)
                 dst_file.flush()
 
+            contigs, contig_id_to_contig_length_bp = dump_contig_data(
+                src_file,
+                dst_file,
+                get_name_and_length_path(resolutions[0]),
+                resolutions,
+                resolution_to_stripes,
+                submatrix_size,
+                additional_dataset_creation_args
+            )
+            dst_file.flush()
+
 
 def main(cmdline: Optional[List[Any]]):
     def cool_file_checker(parser: argparse.ArgumentParser, filename: str):
@@ -735,3 +739,12 @@ def main(cmdline: Optional[List[Any]]):
         ] if args.resolutions is not None else None,
         additional_dataset_creation_args=additional_dataset_creation_args
     )
+
+
+cool_flatten_convert(
+    "..\\HiCT_Server\\data\\mat18_100k.cool",
+    "..\\HiCT_Server\\data\\mat18_100k.cool.hict.hdf5",
+    lambda r: f'/resolutions/{str(r)}/chroms',
+    resolutions=None,
+    additional_dataset_creation_args=None
+)
