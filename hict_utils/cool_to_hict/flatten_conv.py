@@ -88,85 +88,6 @@ def save_indirect_block(
     return current_sparse_offset, current_dense_offset
 
 
-# def save_values_to_group(
-#         blocks: List[Tuple[List[np.int64], List[np.int64], List]],
-#         leftmost_block_index: np.int64,
-#         block_datasets: Tuple[Dataset, Dataset, Dataset, Dataset, Dataset, Dataset],
-#         current_sparse_offset: np.int64,
-#         current_dense_offset: np.int64,
-#         stripes: List[StripeDescriptor],
-#         dense_submatrix_size: np.int64,
-# ) -> Tuple[np.int64, np.int64]:
-#     (block_rows, block_cols, block_vals, block_offset,
-#      block_length, dense_blocks) = block_datasets
-#     block_count_in_row: np.int64 = len(blocks)
-#     row_stripe: StripeDescriptor = stripes[leftmost_block_index]
-#     block_row_count: np.int64 = row_stripe.stripe_length_bins
-#     for block_index in range(leftmost_block_index, block_count_in_row):
-#         col_stripe: StripeDescriptor = stripes[block_index]
-#         block = blocks[block_index]
-#         block_index_in_datasets: np.int64 = leftmost_block_index * \
-#             block_count_in_row + block_index
-#         # Do not store empty blocks:
-#         block_nonzero_element_count = len(block[0])
-#         if block_nonzero_element_count == 0:
-#             # print(f'Not dumping empty block {block_index}')
-#             block_length[block_index_in_datasets] = 0
-#             continue
-
-#         block_col_count: np.int64 = col_stripe.stripe_length_bins
-
-#         block_length[block_index_in_datasets] = block_nonzero_element_count
-
-#         if (
-#                 (
-#                     block_row_count == dense_submatrix_size
-#                 )
-#                 and
-#                 (
-#                     block_col_count == dense_submatrix_size
-#                 )
-#                 and
-#                 (
-#                     block_nonzero_element_count >= (
-#                         (block_row_count * block_col_count) // 2)
-#                 )
-#         ):
-#             # Save as a dense matrix
-#             block_offset[block_index_in_datasets] = -current_dense_offset - 1
-#             dense_blocks.resize(1 + current_dense_offset, axis=0)
-#             mx_coo = coo_matrix(
-#                 (
-#                     block[2],
-#                     (
-#                         block[0],
-#                         block[1]
-#                     )
-#                 ),
-#                 shape=(block_row_count, block_col_count)
-#             )
-#             dense_blocks[current_dense_offset, 0, :, :] = mx_coo.toarray()
-#             current_dense_offset += 1
-#         else:
-#             # Save as sparse matrix
-#             block_offset[block_index_in_datasets] = current_sparse_offset
-#             block_rows[current_sparse_offset:current_sparse_offset +
-#                        block_nonzero_element_count] = block[0]
-#             block_cols[current_sparse_offset:current_sparse_offset +
-#                        block_nonzero_element_count] = block[1]
-#             block_vals[current_sparse_offset:current_sparse_offset +
-#                        block_nonzero_element_count] = block[2]
-#             current_sparse_offset += block_nonzero_element_count
-#     return current_sparse_offset, current_dense_offset
-
-
-# def clear_blocks(blocks: List[Tuple[List, List, List]], current_row_stripe_id: np.int64):
-#     for block_index in range(current_row_stripe_id, len(blocks)):
-#         blocks[block_index][0].clear()
-#         blocks[block_index][1].clear()
-#         blocks[block_index][2].clear()
-
-
 def dump_stripe_data(
         src_file: h5py.File,
         dst_file: h5py.File,
@@ -181,12 +102,6 @@ def dump_stripe_data(
         f'/resolutions/{resolution}/stripes')
     bins_group: h5py.Group = src_file[f'/resolutions/{resolution}/bins']
     bin_id_to_initial_contig_id: h5py.Dataset = bins_group['chrom']
-    # contig_start_bins: h5py.Dataset = src_file[f'/resolutions/{resolution}/indexes/chrom_offset'].astype(
-    #     np.int64)
-    # contig_length_bins_ds: np.ndarray = contig_start_bins[1:] - \
-    #     contig_start_bins[:-1]
-
-    # bins_count: np.int64 = len(bins_group['chrom'])
     bin_weights: Optional[h5py.Dataset] = bins_group['weight'] if 'weight' in bins_group.keys(
     ) else None
 
@@ -243,11 +158,6 @@ def dump_contig_data(
     # TODO: Maybe in .mcool different contigs may be present/not present at different resolutions
     anyresolution: np.int64 = resolutions[0]
     contig_info_group: h5py.Group = dst_file.create_group('/contig_info/')
-    # print(
-    #     f"src file keys: {list(src_file.keys())}", flush=True)
-    # print(f"pathtonameandlength: {path_to_name_and_length}", flush=True)
-    # print(
-    #     f"pathtonameandlength keys: {list(src_file[f'{path_to_name_and_length}'].keys())}", flush=True)
     contig_info_group.copy(
         src_file[f'{path_to_name_and_length}/name'], 'contig_name')
     contig_names: h5py.Dataset = src_file[f'{path_to_name_and_length}/name']
@@ -300,6 +210,62 @@ def dump_contig_data(
             contig_start_bins[:-1]
         resolution_to_contig_length_bins[resolution] = contig_length_bins_ds
 
+    for resolution in resolutions:
+        assert np.all(
+            resolution_to_contig_length_bins[resolution] > 0
+        ),        "Zero-length contigs are present??"
+
+    def generate_atus_for_contig(contig_id: np.int64, resolution: np.int64) -> List[ATUDescriptor]:
+        start_bin: np.int64 = contig_start_bins_at_resolution[resolution][contig_id]
+        #ctg_length: np.int64 = resolution_to_contig_length_bins[resolution][contig_id]
+        end_bin: np.int64 = start_bin + \
+            resolution_to_contig_length_bins[resolution][contig_id]
+            
+        start_stripe_id = start_bin // submatrix_size
+
+        atus: List[ATUDescriptor] = [
+            ATUDescriptor.make_atu_descriptor(
+                stripes[resolution][start_stripe_id],
+                start_bin % submatrix_size,
+                submatrix_size if ((start_bin // submatrix_size) < (end_bin // submatrix_size)) else
+                1+((end_bin-1) % submatrix_size),
+                ATUDirection.FORWARD
+            )
+        ]
+        
+        start_bin = ((start_bin // submatrix_size)+1)*submatrix_size
+
+        equal_parts_count: np.int64 = (end_bin - start_bin) // 256
+
+        atus.extend((
+            ATUDescriptor.make_atu_descriptor(
+                stripes[resolution][start_stripe_id + part + 1],
+                0,
+                submatrix_size,
+                ATUDirection.FORWARD
+            ) for part in range(equal_parts_count)
+        ))
+
+        start_bin += (len(atus)-1)*submatrix_size
+
+        # while start_bin < end_bin:
+        #     atus.append(ATUDescriptor.make_atu_descriptor(
+        #         stripes[resolution][start_bin // submatrix_size],
+        #         start_bin % submatrix_size,
+        #         ((min(submatrix_size, end_bin - start_bin)-1)%submatrix_size)+1,
+        #         ATUDirection.FORWARD
+        #     ))
+        #     start_bin += submatrix_size
+        if start_bin < end_bin:
+            atus.append(ATUDescriptor.make_atu_descriptor(
+                    stripes[resolution][start_stripe_id + 1 + equal_parts_count],
+                    0,
+                    1+((end_bin-1)%submatrix_size),
+                    ATUDirection.FORWARD
+                ))
+            
+        return atus
+
     contigs: List[ContigDescriptor] = [
         ContigDescriptor.make_contig_descriptor(
             contig_id=contig_id,
@@ -310,25 +276,10 @@ def dump_contig_data(
                 resolution: resolution_to_contig_length_bins[resolution][contig_id] for resolution in resolutions},
             contig_presence_in_resolution={resolution: ContigHideType.AUTO_SHOWN if resolution_to_contig_length_bins[
                 resolution][contig_id] > 1 else ContigHideType.AUTO_HIDDEN for resolution in resolutions},
-            atus={resolution: [
-                ATUDescriptor.make_atu_descriptor(
-                    stripe_descriptor=stripes[resolution][contig_part_id + (contig_start_bins_at_resolution[resolution][contig_id] // resolution)],
-                    start_index_in_stripe_incl=0,
-                    end_index_in_stripe_excl=min(submatrix_size, resolution_to_contig_length_bins[resolution]
-                     [contig_id] - contig_part_id*submatrix_size),
-                    direction=ATUDirection.FORWARD
-                ) for contig_part_id in range(
-                    (resolution_to_contig_length_bins[resolution]
-                     [contig_id] // resolution)
-                    +
-                    min(1,
-                        resolution_to_contig_length_bins[resolution][contig_id] % resolution)
-                )
-            ] for resolution in resolutions},
+            atus={resolution: generate_atus_for_contig(contig_id, resolution) for resolution in resolutions},
             scaffold_id=None
         ) for contig_id in range(0, contig_count)
     ]
-
 
     for resolution in resolutions:
         contigs_group: h5py.Group = dst_file.create_group(
@@ -404,7 +355,6 @@ def cool_flatten_convert(
 ):
     submatrix_size: np.int64 = 256
     hdf5_max_chunk_size: np.int64 = 32 * 1024 * 1024 * 8
-    max_fetch_size: np.int64 = 8 * 1024 * 1024
     if additional_dataset_creation_args is None:
         additional_dataset_creation_args = {}
 
@@ -413,7 +363,8 @@ def cool_flatten_convert(
             resolutions = [np.int64(sdn) for sdn in filter(
                 lambda s: s.isnumeric(), src_file['resolutions'].keys())]
         with h5py.File(name=dst_file_path, mode='w') as dst_file:
-            resolution_to_stripes: Dict[np.int64, List[StripeDescriptor]] = dict()
+            resolution_to_stripes: Dict[np.int64,
+                                        List[StripeDescriptor]] = dict()
             for resolution in sorted(resolutions, reverse=True):
                 print(f"Resolution {resolution} out of {resolutions}")
                 stripes = dump_stripe_data(
@@ -440,42 +391,14 @@ def cool_flatten_convert(
                 nonzero_pixel_count: np.int64 = len(src_pixel_row)
                 res_group.attrs.create(name='bins_count', data=src_bins_count)
                 # Maximum count of stripes horizontally [covering rows 0..submatrix_size)
-                stripes_count = len(stripes)
-                # stripe_data: List[
-                #     Tuple[
-                #         List[np.int64],
-                #         List[np.int64],
-                #         List]
-                # ] = [([], [], []) for _ in range(0, stripes_count)]
-                # previous_pixel_row = 0
-                # Note: since stripe !== contig, these are in fact different:
-                # stripe_start_indices: np.ndarray = np.cumsum([0] + [s.stripe_length_bins for s in stripes],
-                #                                              dtype=np.int64)
-                # stripe_start_indices: h5py.Dataset = src_file[f'resolutions/{resolution}/indexes/chrom_offset']
+                stripes_count = len(stripes)             
                 all_rows_start_indices: h5py.Dataset = src_file[
                     f'resolutions/{resolution}/indexes/bin1_offset']
-
-                fetch_size: np.int64 = len(src_pixel_row)
-                fetchblock_count: np.int64 = fetch_size // max_fetch_size + \
-                    min(1, fetch_size % max_fetch_size)
 
                 print(
                     f"bins_count: {src_bins_count}, "
                     f"stripes_count: {stripes_count}, "
-                    f"fetch_size: {fetch_size}, "
-                    f"fetchblock_count: {fetchblock_count}"
                 )
-
-                current_row_stripe_id: np.int64 = 0
-                # current_col_stripe_id: np.int64 = 0
-                current_row_stripe_start_row: np.int64 = 0
-                # current_col_stripe_start_col: np.int64 = 0
-                # # Note: these values are exclusive:
-                current_row_stripe_max_row: np.int64 = stripes[0].stripe_length_bins
-                # current_col_stripe_max_col: np.int64 = stripes[0].stripe_length
-                # # In current stripe all rows are:
-                # current_row_stripe_start_row <= row < current_row_stripe_max_row
-                pixeltable_start_position: np.int64 = 0
 
                 ds_creation_args: dict = copy.deepcopy(
                     additional_dataset_creation_args)
@@ -527,9 +450,12 @@ def cool_flatten_convert(
 
                 for vstripe_l in range(0, stripes_count):
                     singlerowstripe_pixel_row, singlerowstripe_pixel_col, singlerowstripe_pixel_val = (
-                        src_pixel_row[all_rows_start_indices[vstripe_l*submatrix_size]:all_rows_start_indices[min((vstripe_l+1)*submatrix_size, len(all_rows_start_indices)-1)]],
-                        src_pixel_col[all_rows_start_indices[vstripe_l*submatrix_size]:all_rows_start_indices[min((vstripe_l+1)*submatrix_size, len(all_rows_start_indices)-1)]],
-                        src_pixel_val[all_rows_start_indices[vstripe_l*submatrix_size]:all_rows_start_indices[min((vstripe_l+1)*submatrix_size, len(all_rows_start_indices)-1)]],
+                        src_pixel_row[all_rows_start_indices[vstripe_l*submatrix_size]:all_rows_start_indices[min(
+                            (vstripe_l+1)*submatrix_size, len(all_rows_start_indices)-1)]],
+                        src_pixel_col[all_rows_start_indices[vstripe_l*submatrix_size]:all_rows_start_indices[min(
+                            (vstripe_l+1)*submatrix_size, len(all_rows_start_indices)-1)]],
+                        src_pixel_val[all_rows_start_indices[vstripe_l*submatrix_size]:all_rows_start_indices[min(
+                            (vstripe_l+1)*submatrix_size, len(all_rows_start_indices)-1)]],
                     )
                     pixel_row_stripes = singlerowstripe_pixel_row // submatrix_size
                     pixel_col_stripes = singlerowstripe_pixel_col // submatrix_size
@@ -560,124 +486,6 @@ def cool_flatten_convert(
                         stripes,
                         submatrix_size
                     )
-
-                ################################
-                # for pixel_row_fetchblock, pixel_col_fetchblock, pixel_cnt_fetchblock in (
-                #         (
-                #             src_pixel_row[i * max_fetch_size: min(
-                #                 (1 + i) * max_fetch_size, fetch_size)],
-                #             src_pixel_col[i * max_fetch_size: min(
-                #                 (1 + i) * max_fetch_size, fetch_size)],
-                #             src_pixel_val[i * max_fetch_size: min(
-                #                 (1 + i) * max_fetch_size, fetch_size)]
-                #         ) for i in range(0, fetchblock_count)
-                # ):
-                #     minimum_row_in_fetchblock: np.int64 = pixel_row_fetchblock[0]
-                #     maximum_row_in_fetchblock: np.int64 = pixel_row_fetchblock[-1]
-                #     assert (
-                #         minimum_row_in_fetchblock <= maximum_row_in_fetchblock
-                #     ), "Row numbers are not monotonely non-decreasing in source data??"
-                #     # print(
-                #     #     f"Searching start positions for rows between {minimum_row_in_fetchblock} and {maximum_row_in_fetchblock}")
-                #     # TODO: Maybe I search for the same thing as bin1_id_offset index from cooler? (Yes, it is, use it!)
-                #     # row_start_indices: np.ndarray = np.searchsorted(
-                #     #     pixel_row_fetchblock,
-                #     #     range(minimum_row_in_fetchblock, 2 + maximum_row_in_fetchblock),
-                #     #     side='left'
-                #     # )
-                #     pixel_row_stripes = pixel_row_fetchblock // submatrix_size
-                #     pixel_col_stripes = pixel_col_fetchblock // submatrix_size
-                #     pixel_intra_stripe_row = pixel_row_fetchblock % submatrix_size
-                #     pixel_intra_stripe_col = pixel_col_fetchblock % submatrix_size
-
-                #     row_start_indices: np.ndarray = all_rows_start_indices[
-                #         minimum_row_in_fetchblock:2 + maximum_row_in_fetchblock
-                #     ] - pixeltable_start_position
-                #     if row_start_indices[0] < 0:
-                #         first_zero_index: np.int64 = np.searchsorted(
-                #             row_start_indices, 0, side='left')
-                #         row_start_indices[:first_zero_index] = 0
-                #     pixeltable_start_position += len(pixel_row_fetchblock)
-
-                #     for i in range(0, len(row_start_indices) - 1):
-                #         row_start_index: np.int64 = row_start_indices[i]
-                #         row_number: np.int64 = pixel_row_fetchblock[row_start_index]
-                #         next_row_start_index: np.int64 = row_start_indices[1 + i]
-                #         # print(f"Parsing row {row_number}")
-                #         while row_number >= current_row_stripe_max_row:
-                #             current_sparse_offset, current_dense_offset = save_values_to_group(
-                #                 stripe_data,
-                #                 current_row_stripe_id,
-                #                 block_datasets,
-                #                 current_sparse_offset,
-                #                 current_dense_offset,
-                #                 stripes,
-                #                 submatrix_size
-                #             )
-                #             clear_blocks(stripe_data, 0)
-                #             dst_file.flush()
-                #             current_row_stripe_id += 1
-                #             current_row_stripe_start_row = current_row_stripe_max_row
-                #             current_row_stripe_max_row += stripes[current_row_stripe_id].stripe_length_bins
-                #             print(
-                #                 f"{print(datetime.datetime.now())}\nStripe {current_row_stripe_id} out of {stripes_count}")
-                #         if row_start_index == next_row_start_index:
-                #             continue
-                #         assert row_start_index >= 0
-                #         assert next_row_start_index >= 0
-                #         single_row_row: np.ndarray = pixel_row_fetchblock[
-                #             row_start_index:next_row_start_index] - current_row_stripe_start_row
-                #         single_row_col: np.ndarray = pixel_col_fetchblock[
-                #             row_start_index:next_row_start_index]
-                #         single_row_cnt: np.ndarray = pixel_cnt_fetchblock[
-                #             row_start_index:next_row_start_index]
-                #         assert max(single_row_row) == min(single_row_row)
-                #         if not is_sorted(single_row_col):
-                #             # print("AAAA")
-                #             pass
-                #         assert is_sorted(single_row_col)
-                #         block_start_indices: np.ndarray = np.searchsorted(
-                #             single_row_col,
-                #             stripe_start_indices[current_row_stripe_id:],
-                #             side='left'
-                #         )
-
-                #         # print(f"Dumping column stripes: {block_start_indices}")
-
-                #         for j in range(0, len(block_start_indices) - 1):
-                #             block_in_row_start_index: np.int64 = block_start_indices[j]
-                #             next_block_in_row_start_index: np.int64 = block_start_indices[1 + j]
-                #             # If there are some points from current block in current row:
-                #             if next_block_in_row_start_index > block_in_row_start_index:
-                #                 row_ids = single_row_row[block_in_row_start_index:next_block_in_row_start_index]
-                #                 assert 0 <= max(row_ids) < submatrix_size
-                #                 assert 0 <= min(row_ids) < submatrix_size
-                #                 stripe_data[current_row_stripe_id +
-                #                             j][0].extend(row_ids)
-                #                 column_ids_original = single_row_col[
-                #                     block_in_row_start_index:next_block_in_row_start_index
-                #                 ]
-                #                 column_ids_in_block = column_ids_original - stripe_start_indices[
-                #                     current_row_stripe_id + j]
-                #                 assert 0 <= max(
-                #                     column_ids_in_block) < submatrix_size
-                #                 assert 0 <= min(
-                #                     column_ids_in_block) < submatrix_size
-                #                 stripe_data[current_row_stripe_id +
-                #                             j][1].extend(column_ids_in_block)
-                #                 stripe_data[current_row_stripe_id + j][2].extend(
-                #                     single_row_cnt[block_in_row_start_index:next_block_in_row_start_index])
-
-                # current_sparse_offset, current_dense_offset = save_values_to_group(
-                #     stripe_data,
-                #     current_row_stripe_id,
-                #     block_datasets,
-                #     current_sparse_offset,
-                #     current_dense_offset,
-                #     stripes,
-                #     submatrix_size
-                # )
-                # clear_blocks(stripe_data, current_row_stripe_id)
                 dst_file.flush()
 
             contigs, contig_id_to_contig_length_bp = dump_contig_data(
@@ -742,8 +550,8 @@ def main(cmdline: Optional[List[Any]]):
 
 
 cool_flatten_convert(
-    "..\\HiCT_Server\\data\\mat18_100k.cool",
-    "..\\HiCT_Server\\data\\mat18_100k.cool.hict.hdf5",
+    "..\\HiCT_Server\\data\\zanu_male_4DN.mcool",
+    "..\\HiCT_Server\\data\\zanu_male_4DN.mcool.hict.hdf5",
     lambda r: f'/resolutions/{str(r)}/chroms',
     resolutions=None,
     additional_dataset_creation_args=None
