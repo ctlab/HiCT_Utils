@@ -9,7 +9,7 @@ import numpy as np
 from h5py import Dataset
 from scipy.sparse import coo_matrix
 
-from hict.core.common import ContigDirection, ContigHideType, ContigDescriptor
+from hict.core.common import ContigDirection, ContigHideType, ContigDescriptor, ATUDescriptor, ATUDirection
 from hict.core.stripe_tree import *
 
 
@@ -92,17 +92,6 @@ def clear_blocks(blocks: List[Tuple[List, List, List]], current_row_stripe_id: n
         blocks[block_index][2].clear()
 
 
-def dump_contig_data(
-        src_file: h5py.File,
-        dst_file: h5py.File,
-        resolution: np.int64,
-        contig_id_to_contig_length_bp: np.ndarray,
-        path_to_name_and_length: str = '/chroms/',
-        additional_dataset_creation_args: Optional[dict] = None
-) -> List[ContigDescriptor]:
-    pass
-
-
 def dump_stripe_data(
         src_file: h5py.File,
         dst_file: h5py.File,
@@ -180,7 +169,7 @@ def dump_contig_data(
         resolutions: List[np.int64],
         stripes: Dict[np.int64, List[StripeDescriptor]],
         additional_dataset_creation_args: Optional[dict] = None
-) -> np.ndarray:
+) -> List[ContigDescriptor]:  # np.ndarray:
     # TODO: Maybe in .mcool different contigs may be present/not present at different resolutions
     anyresolution: np.int64 = resolutions[0]
     contig_info_group: h5py.Group = dst_file.create_group('/contig_info/')
@@ -191,8 +180,18 @@ def dump_contig_data(
     #     f"pathtonameandlength keys: {list(src_file[f'{path_to_name_and_length}'].keys())}", flush=True)
     contig_info_group.copy(
         src_file[f'{path_to_name_and_length}/name'], 'contig_name')
+    contig_names: h5py.Dataset = src_file[f'{path_to_name_and_length}/name']
 
     contig_count: np.int64 = len(contig_info_group['contig_name'])
+
+    contig_info_group.create_dataset('contig_direction',
+                                     data=[ContigDirection.FORWARD.value for _ in range(
+                                         0, contig_count)],
+                                     **additional_dataset_creation_args)
+    contig_info_group.create_dataset('ordered_contig_ids', data=list(range(0, contig_count)),
+                                     dtype=np.int64, **additional_dataset_creation_args)
+    contig_info_group.create_dataset('contig_scaffold_id', data=[-1 for _ in range(0, contig_count)],
+                                     dtype=np.int64, **additional_dataset_creation_args)
 
     src_contig_chrom_offset: h5py.Dataset = src_file[
         f'/resolutions/{anyresolution}/indexes/chrom_offset']
@@ -217,30 +216,105 @@ def dump_contig_data(
                                          **additional_dataset_creation_args)
         contig_id_to_contig_length_bp = contig_length[:]
 
-    contig_info_group.create_dataset('contig_direction',
-                                     data=[ContigDirection.FORWARD.value for _ in range(
-                                         0, contig_count)],
-                                     **additional_dataset_creation_args)
-    contig_info_group.create_dataset('ordered_contig_ids', data=list(range(0, contig_count)),
-                                     dtype=np.int64, **additional_dataset_creation_args)
-    contig_info_group.create_dataset('contig_scaffold_id', data=[-1 for _ in range(0, contig_count)],
-                                     dtype=np.int64, **additional_dataset_creation_args)
+    contig_start_bins_at_resolution: Dict[np.int64, np.ndarray] = dict()
+    resolution_to_contig_length_bins: Dict[np.int64, np.ndarray] = dict()
+
+    for resolution in resolutions:
+        contig_start_bins: h5py.Dataset = src_file[f'/resolutions/{resolution}/indexes/chrom_offset'].astype(
+            np.int64)
+        contig_start_bins_at_resolution[resolution] = contig_start_bins
+        contig_length_bins_ds: np.ndarray = contig_start_bins[1:] - \
+            contig_start_bins[:-1]
+        resolution_to_contig_length_bins[resolution] = contig_length_bins_ds
+
+    contigs: List[ContigDescriptor] = [
+        ContigDescriptor.make_contig_descriptor(
+            contig_id=contig_id,
+            contig_name=contig_names[contig_id],
+            direction=ContigDirection.FORWARD,
+            contig_length_bp=contig_id_to_contig_length_bp[contig_id],
+            contig_length_at_resolution={
+                resolution: resolution_to_contig_length_bins[resolution][contig_id] for resolution in resolutions},
+            contig_presence_in_resolution={resolution: ContigHideType.AUTO_SHOWN if [
+                resolution][contig_id] > 1 else ContigHideType.AUTO_HIDDEN for resolution in resolutions},
+            atus={resolution: [
+                ATUDescriptor.make_atu_descriptor(
+                    stripe_descriptor=stripes[contig_part_id +
+                                              contig_start_bins_at_resolution[resolution][contig_id] // resolution],
+                    start_index_in_stripe_incl=0,
+                    end_index_in_stripe_excl=0,
+                    direction=ATUDirection.FORWARD
+                ) for contig_part_id in range(
+                    (resolution_to_contig_length_bins[resolution]
+                     [contig_id] // resolution)
+                    +
+                    min(1,
+                        resolution_to_contig_length_bins[resolution][contig_id] % resolution)
+                )
+            ] for resolution in resolutions},
+            scaffold_id=None
+        ) for contig_id in range(0, contig_count)
+    ]
 
     for resolution in resolutions:
         contigs_group: h5py.Group = dst_file.create_group(
             f'/resolutions/{resolution}/contigs')
-        contig_start_bins: h5py.Dataset = src_file[f'/resolutions/{resolution}/indexes/chrom_offset'].astype(
-            np.int64)
-        contig_length_bins_ds: np.ndarray = contig_start_bins[1:] - \
-            contig_start_bins[:-1]
-        contigs_group.create_dataset('contig_length_bins', data=contig_length_bins_ds, dtype=np.int64,
-                                     **additional_dataset_creation_args)
-        contigs_group.create_dataset('contig_hide_type',
-                                     data=[ContigHideType.AUTO_SHOWN.value for _ in range(
-                                         0, contig_count)],
-                                     dtype=np.int8, **additional_dataset_creation_args)
+        atl_group: h5py.Group = dst_file.create_group(
+            f'/resolutions/{resolution}/atl')
 
-    return contig_id_to_contig_length_bp
+        contigs_group.create_dataset(
+            'contig_length_bins',
+            data=[contig.contig_length_at_resolution[resolution]
+                  for contig in contigs],
+            dtype=np.int64,
+            **additional_dataset_creation_args
+        )
+        contigs_group.create_dataset(
+            'contig_hide_type',
+            data=[contig.presence_in_resolution[resolution].value for contig in contigs],
+            dtype=np.int8,
+            **additional_dataset_creation_args
+        )
+
+        contig_id_to_atus_id: List[Tuple[np.int64, np.int64]] = []
+        all_atus_at_resolution: List[ATUDescriptor] = []
+        current_atu_id: np.int64 = np.int64(0)
+        for contig in contigs:
+            contig_id_to_atus_id.extend((
+                (contig.contig_id, current_atu_id + i) for i in range(len(contig.atus[resolution]))
+            ))
+            current_atu_id += np.int64(len(contig.atus[resolution]))
+            all_atus_at_resolution.extend(contig.atus[resolution])
+
+        atu_array: np.ndarray = np.array(
+            [
+                (
+                    atu.stripe_descriptor.stripe_id,
+                    atu.start_index_in_stripe_incl,
+                    atu.end_index_in_stripe_excl,
+                    atu.direction.value
+                ) for atu in all_atus_at_resolution
+            ], dtype=np.int64
+        )
+
+        contigs_atu_array: np.ndarray = np.array(
+            contig_id_to_atus_id,
+            dtype=np.int64
+        )
+
+        contigs_group.create_dataset(
+            "atl",
+            data=contigs_atu_array,
+            **additional_dataset_creation_args
+        )
+
+        atl_group.create_dataset(
+            "basis_atu",
+            data=atu_array,
+            **additional_dataset_creation_args
+        )
+
+    return contigs  # contig_id_to_contig_length_bp
 
 
 def is_sorted(a: np.ndarray) -> bool:
