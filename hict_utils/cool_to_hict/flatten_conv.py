@@ -457,6 +457,9 @@ def cool_flatten_convert(
                         src_pixel_val[all_rows_start_indices[vstripe_l*submatrix_size]:all_rows_start_indices[min(
                             (vstripe_l+1)*submatrix_size, len(all_rows_start_indices)-1)]],
                     )
+                    if len(singlerowstripe_pixel_row) <= 0:
+                        print("Zero-length stripe subarray")
+                        continue
                     pixel_row_stripes = singlerowstripe_pixel_row // submatrix_size
                     pixel_col_stripes = singlerowstripe_pixel_col // submatrix_size
                     pixel_intra_stripe_row = singlerowstripe_pixel_row % submatrix_size
@@ -549,10 +552,10 @@ def main(cmdline: Optional[List[Any]]):
     )
 
 
-cool_flatten_convert(
-    "..\\HiCT_Server\\data\\zanu_male_4DN.mcool",
-    "..\\HiCT_Server\\data\\zanu_male_4DN.mcool.hict.hdf5",
-    lambda r: f'/resolutions/{str(r)}/chroms',
-    resolutions=None,
-    additional_dataset_creation_args=None
-)
+# cool_flatten_convert(
+#     "..\\HiCT_Server\\data\\zanu_male_4DN.mcool",
+#     "..\\HiCT_Server\\data\\zanu_male_4DN.mcool.hict.hdf5",
+#     lambda r: f'/resolutions/{str(r)}/chroms',
+#     resolutions=None,
+#     additional_dataset_creation_args=None
+# )
