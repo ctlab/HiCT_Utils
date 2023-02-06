@@ -62,6 +62,7 @@ def save_indirect_block(
         ):
             block_offset_ds[block_index_in_datasets] = - \
                 current_dense_offset - 1
+            block_length_ds[block_index_in_datasets] = block_nonzero_element_count
             dense_blocks_ds.resize(1 + current_dense_offset, axis=0)
             mx_coo = coo_matrix(
                 (
@@ -77,6 +78,7 @@ def save_indirect_block(
             current_dense_offset += 1
         else:
             block_offset_ds[block_index_in_datasets] = current_sparse_offset
+            block_length_ds[block_index_in_datasets] = block_nonzero_element_count
             block_rows_ds[current_sparse_offset:current_sparse_offset +
                           block_nonzero_element_count] = block_rows
             block_cols_ds[current_sparse_offset:current_sparse_offset +
@@ -270,7 +272,6 @@ def dump_contig_data(
         ContigDescriptor.make_contig_descriptor(
             contig_id=contig_id,
             contig_name=contig_names[contig_id],
-            direction=ContigDirection.FORWARD,
             contig_length_bp=contig_id_to_contig_length_bp[contig_id],
             contig_length_at_resolution={
                 resolution: resolution_to_contig_length_bins[resolution][contig_id] for resolution in resolutions},
