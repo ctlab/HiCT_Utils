@@ -36,7 +36,7 @@ def save_indirect_block(
     block_count: np.int64 = len(block_start_indices)
     # Last element should store length of the pixel table
     block_start_indices = np.append(
-        block_start_indices, len(pixel_col_stripes))
+        np.hstack(((0,), block_start_indices)), len(pixel_col_stripes))
     block_lengths = block_start_indices[1:] - block_start_indices[:-1]
     stripe_count: np.int64 = np.int64(len(stripes))
 
