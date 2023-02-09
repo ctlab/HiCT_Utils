@@ -514,6 +514,8 @@ def main(cmdline: Optional[List[Any]]):
     )
     parser.add_argument("-c", "--compression", default="lzf", choices=[
                         "lzf", "gzip", "none"], help="Select HDF5 dataset compression algorithm")
+    parser.add_argument("-t", "--layout", default="default", choices=[
+                        "default", "globalchroms"], help="Non-standardized layouts support")
     parser.add_argument("-n", "--no-shuffle", action="store_false",
                         help="Disable HDF5 shuffle filter", dest="shuffle")
     parser.add_argument("-r", "--resolutions", nargs='*',
@@ -533,15 +535,21 @@ def main(cmdline: Optional[List[Any]]):
         'shuffle': args.shuffle,
     }
     if (args.compression.lower() != "none"):
-        additional_dataset_creation_args['compression'] = args.compression.lower(
+        additional_dataset_creation_args['compression'] = (
+            args.compression.lower()
         )
+    
+    path_to_name_and_length = {
+        "default": (lambda r: f'/resolutions/{str(r)}/chroms'),
+        "globalchroms": (lambda _: '/chroms'),
+    }[args.layout]
 
     print(f"args object: {args}")
 
     cool_flatten_convert(
         args.input,
         args.output if args.output is not None else f"{args.input}.hict.hdf5",
-        lambda r: f'/resolutions/{str(r)}/chroms',
+        path_to_name_and_length,
         resolutions=[
             np.int64(r)
             for r in args.resolutions
