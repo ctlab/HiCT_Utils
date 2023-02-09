@@ -31,10 +31,9 @@ def save_indirect_block(
     block_start_indices = np.where(
         pixel_col_stripes[:-1] != pixel_col_stripes[1:]
     )[0] + 1
-    block_count: np.int64 = len(block_start_indices)
     # Last element should store length of the pixel table
-    block_start_indices = np.append(
-        np.hstack(((0,), block_start_indices)), len(pixel_col_stripes))
+    block_start_indices = np.hstack(((0,), block_start_indices, len(pixel_col_stripes)))
+    block_count: np.int64 = len(block_start_indices)-1
     block_lengths = block_start_indices[1:] - block_start_indices[:-1]
     stripe_count: np.int64 = np.int64(len(stripes))
 
@@ -44,6 +43,8 @@ def save_indirect_block(
         block_index_in_datasets = (
             row_stripe_id*stripe_count + block_col_stripe_id
         )
+        if block_index_in_datasets == 49:
+            print("AAAA")
         block_nonzero_element_count = block_lengths[block_index]
         if block_nonzero_element_count <= 0:
             continue
@@ -448,6 +449,8 @@ def cool_flatten_convert(
                 current_dense_offset: np.int64 = 0
 
                 for vstripe_l in range(0, stripes_count):
+                    if vstripe_l == 9:
+                        print("AAAA")
                     singlerowstripe_pixel_row, singlerowstripe_pixel_col, singlerowstripe_pixel_val = (
                         src_pixel_row[all_rows_start_indices[vstripe_l*submatrix_size]:all_rows_start_indices[min(
                             (vstripe_l+1)*submatrix_size, len(all_rows_start_indices)-1)]],
@@ -552,8 +555,8 @@ def main(cmdline: Optional[List[Any]]):
 
 
 # cool_flatten_convert(
-#     "..\\HiCT_Server\\data\\zanu_male_4DN.mcool",
-#     "..\\HiCT_Server\\data\\zanu_male_4DN.mcool.hict.hdf5",
+#     "..\\HiCT_Server\\data\\mat18_100k.mcool",
+#     "..\\HiCT_Server\\data\\mat18_100k.hict.hdf5",
 #     lambda r: f'/resolutions/{str(r)}/chroms',
 #     resolutions=None,
 #     additional_dataset_creation_args=None
