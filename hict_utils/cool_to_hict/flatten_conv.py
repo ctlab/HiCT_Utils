@@ -2,16 +2,14 @@ import argparse
 import copy
 import datetime
 import math
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, Callable
 
 import h5py
 import numpy as np
 from h5py import Dataset
 from scipy.sparse import coo_matrix
 
-from hict.core.common import ContigDirection, ContigHideType, ContigDescriptor, ATUDescriptor, ATUDirection
-from hict.core.stripe_tree import *
-
+from hict.core.common import ContigDirection, ContigHideType, ContigDescriptor, ATUDescriptor, ATUDirection, StripeDescriptor
 
 def save_indirect_block(
     row_stripe_id: np.int64,
