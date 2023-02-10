@@ -184,10 +184,10 @@ def dump_contig_data(
 
     contig_id_to_contig_length_bp: np.ndarray
 
-    if 'length' in src_file[f'/resolutions/{anyresolution}/chroms'].keys():
+    if 'length' in src_file[path_to_name_and_length].keys():
         contig_info_group.copy(
-            src_file[f'/resolutions/{anyresolution}/chroms/length'], 'contig_length_bp')
-        contig_id_to_contig_length_bp = src_file[f'/resolutions/{anyresolution}/chroms/length'][:]
+            src_file[f'{path_to_name_and_length}/length'], 'contig_length_bp')
+        contig_id_to_contig_length_bp = src_file[f'{path_to_name_and_length}/length'][:]
     else:
         contig_length: np.ndarray = np.zeros(contig_count, dtype=np.int64)
 
@@ -374,6 +374,7 @@ def cool_flatten_convert(
                     additional_dataset_creation_args
                 )
                 resolution_to_stripes[resolution] = stripes
+                dst_file['resolutions'].attrs.create("hict_version", "0.1.3.1")
                 res_group: h5py.Group = dst_file.create_group(
                     f'resolutions/{resolution}/treap_coo')
                 res_group.attrs.create(
