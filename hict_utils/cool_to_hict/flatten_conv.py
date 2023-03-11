@@ -275,7 +275,7 @@ def dump_contig_data(
             contig_presence_in_resolution={resolution: ContigHideType.AUTO_SHOWN if resolution_to_contig_length_bins[
                 resolution][contig_id] > 1 else ContigHideType.AUTO_HIDDEN for resolution in resolutions},
             atus={resolution: generate_atus_for_contig(contig_id, resolution) for resolution in resolutions},
-            scaffold_id=None
+            # scaffold_id=None
         ) for contig_id in range(0, contig_count)
     ]
 
