@@ -1,3 +1,4 @@
+import dill as pickle
 import argparse
 import copy
 from datetime import datetime
@@ -30,6 +31,40 @@ from hict.core.common import QueryLengthUnit, ScaffoldDescriptor
 from hict.core.scaffold_tree import ScaffoldTree
 
 import cooler
+import dill
+
+
+def get_deserializer(record_width_bytes: int, record_dtype):
+    class NPZRowDeserializer(ext_sort.Deserializer):
+
+        def __init__(self, reader):
+            super().__init__(reader)
+
+        def read(self):
+            single_coo_dump = self._reader.read(record_width_bytes)
+            if single_coo_dump:
+                return np.frombuffer(single_coo_dump, dtype=record_dtype)
+            return None
+    return NPZRowDeserializer
+        
+def get_serializer(record_dtype):    
+    class NPZRowSerializer(ext_sort.Serializer):
+
+        def __init__(self, writer):
+            super().__init__(writer)
+
+        def write(self, item):
+            assert (
+                item.dtype == record_dtype
+            ), "dtype has changed after sorting?"
+            self._writer.write(item.tobytes(order='C'))
+
+    return NPZRowSerializer
+
+
+Ser: ext_sort.Serializer
+DeSer: ext_sort.Deserializer
+
 
 
 class HiCTToCoolerConverter(object):
@@ -47,6 +82,7 @@ class HiCTToCoolerConverter(object):
         resolutions: Optional[List[int]] = None,
         maximum_fetch_size_bytes: int = 256*1024*1024*8
     ):
+        global Ser, DeSer
         if resolutions is None:
             resolutions = [min(self.chunked_file.resolutions)]
 
@@ -124,49 +160,112 @@ class HiCTToCoolerConverter(object):
             number_of_blocks_to_fetch: int = int(max(1, maximum_fetch_size_bytes // (
                 val_dtype_width_bytes * self.chunked_file.dense_submatrix_size[resolution] * self.chunked_file.dense_submatrix_size[resolution])))
 
-            def fetch_chunk():
-                for start_row_incl in range(0, total_bin_length, self.chunked_file.dense_submatrix_size[resolution]):
-                    end_row_excl = min(
-                        start_row_incl + self.chunked_file.dense_submatrix_size[resolution], total_bin_length)
-                    for start_col_incl in range(start_row_incl, total_bin_length, self.chunked_file.dense_submatrix_size[resolution] * number_of_blocks_to_fetch):
-                        end_col_excl = min(
-                            start_col_incl + self.chunked_file.dense_submatrix_size[resolution] * number_of_blocks_to_fetch, total_bin_length)
-                        dense, _, _ = self.chunked_file.get_submatrix(
-                            resolution,
-                            start_row_incl,
-                            start_col_incl,
-                            end_row_excl,
-                            end_col_excl,
-                            exclude_hidden_contigs=False
-                        )
-                        if start_row_incl == start_col_incl:
-                            dense = np.triu(dense)
-                        sparse = coo_array(dense, dtype=(
-                            self.chunked_file.dtype if self.chunked_file.dtype is not None else np.int32))
-                        rows = sparse.row + start_row_incl
-                        cols = sparse.col + start_col_incl
-                        # coo_record_row = np.rec.array(sparse.row + start_row_incl, dtype=('row', row_dtype))
-                        # coo_record_rcv = npr.append_fields(coo_record_row, data=(sparse.col, sparse.data), names=('col', 'val'), dtypes=(col_dtype, val_dtype), usemask=False, asrecarray=True)
-                        ind = np.lexsort((cols, rows))
-                        coo_chunk = {
-                            'bin1_id': rows[ind],
-                            'bin2_id': cols[ind],
-                            'count': sparse.data[ind]
-                        }
-                        # print("Yielding chunk", flush=True)
-                        yield coo_chunk
-                        print(f"Exported: {float(start_row_incl*total_bin_length + start_col_incl) / float(total_bin_length*total_bin_length)} Time: {datetime.now().strftime('%H:%M:%S')}", flush=True)
+            row_dtype = np.int32
+            row_dtype_width_bytes: int = int(np.dtype(row_dtype).itemsize) if row_dtype is not None else 4
+            col_dtype = np.int32
+            col_dtype_width_bytes: int = int(np.dtype(col_dtype).itemsize) if col_dtype is not None else 4
+            
+            dump_record_width_bytes: int = row_dtype_width_bytes+col_dtype_width_bytes+val_dtype_width_bytes # Since mcool requires int32 rows and columns
+                            
+            record_dtype = None
+            record_width_bytes = None
 
-            #pixels_generator=(fetch_chunk(start_row_incl, start_col_incl) for )
+            with tempfile.NamedTemporaryFile("w+b") as tmpf:
+                with bz2.open(tmpf, mode="wb", compresslevel=5) as cstream:            
+                    for start_row_incl in range(0, total_bin_length, self.chunked_file.dense_submatrix_size[resolution]):
+                        end_row_excl = min(
+                            start_row_incl + self.chunked_file.dense_submatrix_size[resolution], total_bin_length)
+                        for start_col_incl in range(start_row_incl, total_bin_length, self.chunked_file.dense_submatrix_size[resolution] * number_of_blocks_to_fetch):
+                            end_col_excl = min(
+                                start_col_incl + self.chunked_file.dense_submatrix_size[resolution] * number_of_blocks_to_fetch, total_bin_length)
+                            dense, _, _ = self.chunked_file.get_submatrix(
+                                resolution,
+                                start_row_incl,
+                                start_col_incl,
+                                end_row_excl,
+                                end_col_excl,
+                                exclude_hidden_contigs=False
+                            )
+                            if start_row_incl == start_col_incl:
+                                dense = np.triu(dense)
+                            sparse = coo_array(dense, dtype=(
+                                self.chunked_file.dtype if self.chunked_file.dtype is not None else np.int32))
+                            rows = sparse.row + start_row_incl
+                            cols = sparse.col + start_col_incl
+                            
+                            coo_record_row = np.rec.array(rows, dtype=[('bin1_id', row_dtype)])
+                            coo_record_rcv = npr.append_fields(coo_record_row, data=[cols, sparse.data], names=['bin2_id', 'count'], dtypes=[col_dtype, val_dtype], usemask=False, asrecarray=True)
+                            coo_bytes = coo_record_rcv.tobytes(order='C')
+                            cstream.write(coo_bytes)
+                            if record_dtype is None:
+                                record_dtype = copy.deepcopy(coo_record_rcv.dtype)
+                            if record_width_bytes is None:
+                                record_width_bytes = len(coo_record_rcv[0].tobytes(order='C'))
+                                assert (
+                                    record_width_bytes == dump_record_width_bytes
+                                ), f"Some padding/alignment was added? {record_width_bytes} != {dump_record_width_bytes}"
+                            del coo_bytes
+                            del coo_record_rcv
+                            del coo_record_row
+                            del sparse                            
+                            
+                            print(f"Exporting raw pixeltable: {float(start_row_incl*total_bin_length + start_col_incl) / float(total_bin_length*total_bin_length)} Time: {datetime.now().strftime('%H:%M:%S')}", flush=True)
+                            
+                    print(f"Exported raw pixeltable, preparing to sort. Time: {datetime.now().strftime('%H:%M:%S')}", flush=True)
+                    assert (
+                        record_dtype is not None
+                    ), "Nothing was dumped and dtype not inferred?"
+                    assert (
+                        record_width_bytes is not None
+                    ), "Nothing was dumped and data width not inferred?"
+                    
+                tmpf.seek(0)
+                with bz2.open(tmpf, mode="rb") as cstream:    
+                    
+                    
+                    
+                    with tempfile.NamedTemporaryFile("w+b") as tmpres:
+                        with bz2.open(tmpres, mode="wb", compresslevel=5) as cresstream:
+                            with bz2.open(tmpf, mode="rb") as cstream:
+                                DeSer = dill.loads(dill.dumps(get_deserializer(record_width_bytes, record_dtype)))
+                                Ser = dill.loads(dill.dumps(get_serializer(record_dtype)))
+                                print(f"Launching external sorting. Time: {datetime.now().strftime('%H:%M:%S')}", flush=True)
+                                ext_sort.sort(
+                                    cstream,
+                                    cresstream,
+                                    Deserializer=DeSer,
+                                    Serializer=Ser,
+                                    chunk_size=(maximum_fetch_size_bytes // val_dtype_width_bytes),
+                                    workers_cnt=os.cpu_count()
+                                )
+                                print(f"External sorting finished. Time: {datetime.now().strftime('%H:%M:%S')}", flush=True)
+                        tmpres.seek(0)
+                        with bz2.open(tmpres, mode="rb") as cresstream:
+                            # Copy from compressed temporary file to Cooler datasets                            
+                            def fetch_chunk():
+                                buf = cresstream.read((maximum_fetch_size_bytes // dump_record_width_bytes) * dump_record_width_bytes)
+                                if buf:
+                                    buf_array = np.frombuffer(buf, dtype=record_dtype)
+                                    rows = map(lambda t: t[0], buf_array)
+                                    cols = map(lambda t: t[1], buf_array)
+                                    vals = map(lambda t: t[2], buf_array)
+                                    yield {
+                                        'bin1_id': rows,
+                                        'bin2_id': cols,
+                                        'count': vals
+                                    }
+                                    
+                            print(f"Starting cooler creation. Time: {datetime.now().strftime('%H:%M:%S')}", flush=True)
 
-            cooler.create_cooler(
-                cool_uri=f"{str(self.output_file_path.absolute())}::/resolutions/{resolution}",
-                bins=bins,
-                pixels=fetch_chunk(),#(fetch_chunk(start_row_incl, start_col_incl) for),
-                symmetric_upper=True,
-                ordered=False,
-                h5opts=ds_args
-            )
+                            cooler.create_cooler(
+                                cool_uri=f"{str(self.output_file_path.absolute())}::/resolutions/{resolution}",
+                                bins=bins,
+                                pixels=fetch_chunk(),
+                                symmetric_upper=True,
+                                ensure_sorted=True,
+                                ordered=True,
+                                h5opts=ds_args
+                            )
 
 
 def main(cmdline: Optional[List[Any]]):
