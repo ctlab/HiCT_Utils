@@ -1,6 +1,8 @@
 import argparse
 import copy
+from datetime import datetime
 from pathlib import Path
+from time import strftime
 from typing import Any, Dict, List, Optional, Tuple, Union, Callable
 
 import h5py
@@ -126,7 +128,7 @@ class HiCTToCoolerConverter(object):
                 for start_row_incl in range(0, total_bin_length, self.chunked_file.dense_submatrix_size[resolution]):
                     end_row_excl = min(
                         start_row_incl + self.chunked_file.dense_submatrix_size[resolution], total_bin_length)
-                    for start_col_incl in range(0, total_bin_length, self.chunked_file.dense_submatrix_size[resolution] * number_of_blocks_to_fetch):
+                    for start_col_incl in range(start_row_incl, total_bin_length, self.chunked_file.dense_submatrix_size[resolution] * number_of_blocks_to_fetch):
                         end_col_excl = min(
                             start_col_incl + self.chunked_file.dense_submatrix_size[resolution] * number_of_blocks_to_fetch, total_bin_length)
                         dense, _, _ = self.chunked_file.get_submatrix(
@@ -137,6 +139,8 @@ class HiCTToCoolerConverter(object):
                             end_col_excl,
                             exclude_hidden_contigs=False
                         )
+                        if start_row_incl == start_col_incl:
+                            dense = np.triu(dense)
                         sparse = coo_array(dense, dtype=(
                             self.chunked_file.dtype if self.chunked_file.dtype is not None else np.int32))
                         rows = sparse.row + start_row_incl
@@ -151,7 +155,7 @@ class HiCTToCoolerConverter(object):
                         }
                         # print("Yielding chunk", flush=True)
                         yield coo_chunk
-                        print(f"Exported: {float(start_row_incl*total_bin_length + start_col_incl) / float(total_bin_length*total_bin_length)}", flush=True)
+                        print(f"Exported: {float(start_row_incl*total_bin_length + start_col_incl) / float(total_bin_length*total_bin_length)} Time: {datetime.now().strftime('%H:%M:%S')}", flush=True)
 
             #pixels_generator=(fetch_chunk(start_row_incl, start_col_incl) for )
 
@@ -161,8 +165,7 @@ class HiCTToCoolerConverter(object):
                 pixels=fetch_chunk(),#(fetch_chunk(start_row_incl, start_col_incl) for),
                 symmetric_upper=True,
                 ordered=False,
-                h5opts=ds_args,
-                triucheck=False
+                h5opts=ds_args
             )
 
 
