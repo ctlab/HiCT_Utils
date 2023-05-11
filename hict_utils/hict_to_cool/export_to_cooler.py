@@ -2,15 +2,11 @@ import argparse
 import copy
 from datetime import datetime
 from pathlib import Path
-from time import strftime
 from typing import Any, Dict, List, Optional, Tuple, Union, Callable
 
 import h5py
 import numpy as np
-from h5py import Dataset
 from scipy.sparse import coo_array
-
-from hict.core.common import ContigDirection, ContigHideType, ContigDescriptor, ATUDescriptor, ATUDirection, StripeDescriptor
 
 from readerwriterlock import rwlock
 
@@ -27,7 +23,6 @@ from hict.api.ContactMatrixFacet import ContactMatrixFacet
 
 from hict.core.chunked_file import ChunkedFile
 from hict.core.common import QueryLengthUnit, ScaffoldDescriptor
-from hict.core.scaffold_tree import ScaffoldTree
 
 import cooler
 import io
