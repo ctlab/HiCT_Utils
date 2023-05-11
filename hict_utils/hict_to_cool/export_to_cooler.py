@@ -32,39 +32,26 @@ from hict.core.scaffold_tree import ScaffoldTree
 
 import cooler
 import dill
+import csv
+import io
 
 
-def get_deserializer(record_width_bytes: int, record_dtype):
-    class NPZRowDeserializer(ext_sort.Deserializer):
+class CSVSerializer(ext_sort.Serializer):
 
-        def __init__(self, reader):
-            super().__init__(reader)
+    def __init__(self, writer):
+        super().__init__(csv.writer(io.TextIOWrapper(writer, write_through=True)))
 
-        def read(self):
-            single_coo_dump = self._reader.read(record_width_bytes)
-            if single_coo_dump:
-                return np.frombuffer(single_coo_dump, dtype=record_dtype)
-            return None
-    return NPZRowDeserializer
-        
-def get_serializer(record_dtype):    
-    class NPZRowSerializer(ext_sort.Serializer):
-
-        def __init__(self, writer):
-            super().__init__(writer)
-
-        def write(self, item):
-            assert (
-                item.dtype == record_dtype
-            ), "dtype has changed after sorting?"
-            self._writer.write(item.tobytes(order='C'))
-
-    return NPZRowSerializer
+    def write(self, item):
+        return self._writer.writerow(item)
 
 
-Ser: ext_sort.Serializer
-DeSer: ext_sort.Deserializer
+class CSVDeserializer(ext_sort.Deserializer):
 
+    def __init__(self, reader):
+        super().__init__(csv.reader(io.TextIOWrapper(reader)))
+
+    def read(self):
+        return next(self._reader)
 
 
 class HiCTToCoolerConverter(object):
@@ -171,7 +158,7 @@ class HiCTToCoolerConverter(object):
             record_width_bytes = None
 
             with tempfile.NamedTemporaryFile("w+b") as tmpf:
-                with bz2.open(tmpf, mode="wb", compresslevel=5) as cstream:            
+                with bz2.open(tmpf, mode="wt", compresslevel=5) as cstream:            
                     for start_row_incl in range(0, total_bin_length, self.chunked_file.dense_submatrix_size[resolution]):
                         end_row_excl = min(
                             start_row_incl + self.chunked_file.dense_submatrix_size[resolution], total_bin_length)
@@ -195,16 +182,18 @@ class HiCTToCoolerConverter(object):
                             
                             coo_record_row = np.rec.array(rows, dtype=[('bin1_id', row_dtype)])
                             coo_record_rcv = npr.append_fields(coo_record_row, data=[cols, sparse.data], names=['bin2_id', 'count'], dtypes=[col_dtype, val_dtype], usemask=False, asrecarray=True)
-                            coo_bytes = coo_record_rcv.tobytes(order='C')
-                            cstream.write(coo_bytes)
-                            if record_dtype is None:
-                                record_dtype = copy.deepcopy(coo_record_rcv.dtype)
-                            if record_width_bytes is None:
-                                record_width_bytes = len(coo_record_rcv[0].tobytes(order='C'))
-                                assert (
-                                    record_width_bytes == dump_record_width_bytes
-                                ), f"Some padding/alignment was added? {record_width_bytes} != {dump_record_width_bytes}"
-                            del coo_bytes
+                            # coo_bytes = coo_record_rcv.tobytes(order='C')
+                            # cstream.write(coo_bytes)
+                            # if record_dtype is None:
+                            #     record_dtype = copy.deepcopy(coo_record_rcv.dtype)
+                            # if record_width_bytes is None:
+                            #     record_width_bytes = len(coo_record_rcv[0].tobytes(order='C'))
+                            #     assert (
+                            #         record_width_bytes == dump_record_width_bytes
+                            #     ), f"Some padding/alignment was added? {record_width_bytes} != {dump_record_width_bytes}"
+                            # del coo_bytes
+                            df = pd.DataFrame(coo_record_rcv)
+                            df.to_csv(cstream, sep=',', header=None, index=None)
                             del coo_record_rcv
                             del coo_record_row
                             del sparse                            
@@ -212,43 +201,41 @@ class HiCTToCoolerConverter(object):
                             print(f"Exporting raw pixeltable: {float(start_row_incl*total_bin_length + start_col_incl) / float(total_bin_length*total_bin_length)} Time: {datetime.now().strftime('%H:%M:%S')}", flush=True)
                             
                     print(f"Exported raw pixeltable, preparing to sort. Time: {datetime.now().strftime('%H:%M:%S')}", flush=True)
-                    assert (
-                        record_dtype is not None
-                    ), "Nothing was dumped and dtype not inferred?"
-                    assert (
-                        record_width_bytes is not None
-                    ), "Nothing was dumped and data width not inferred?"
+                    # assert (
+                    #     record_dtype is not None
+                    # ), "Nothing was dumped and dtype not inferred?"
+                    # assert (
+                    #     record_width_bytes is not None
+                    # ), "Nothing was dumped and data width not inferred?"
                     
                 tmpf.seek(0)
-                with bz2.open(tmpf, mode="rb") as cstream:    
-                    
+                with bz2.open(tmpf, mode="rt") as cstream:                       
                     
                     
                     with tempfile.NamedTemporaryFile("w+b") as tmpres:
                         with bz2.open(tmpres, mode="wb", compresslevel=5) as cresstream:
                             with bz2.open(tmpf, mode="rb") as cstream:
-                                DeSer = dill.loads(dill.dumps(get_deserializer(record_width_bytes, record_dtype)))
-                                Ser = dill.loads(dill.dumps(get_serializer(record_dtype)))
                                 print(f"Launching external sorting. Time: {datetime.now().strftime('%H:%M:%S')}", flush=True)
                                 ext_sort.sort(
                                     cstream,
                                     cresstream,
-                                    Deserializer=DeSer,
-                                    Serializer=Ser,
+                                    Serializer=CSVSerializer,
+                                    Deserializer=CSVDeserializer,
                                     chunk_size=(maximum_fetch_size_bytes // val_dtype_width_bytes),
                                     workers_cnt=os.cpu_count()
                                 )
                                 print(f"External sorting finished. Time: {datetime.now().strftime('%H:%M:%S')}", flush=True)
                         tmpres.seek(0)
-                        with bz2.open(tmpres, mode="rb") as cresstream:
+                        with bz2.open(tmpres, mode="rt") as cresstream:
                             # Copy from compressed temporary file to Cooler datasets                            
                             def fetch_chunk():
-                                buf = cresstream.read((maximum_fetch_size_bytes // dump_record_width_bytes) * dump_record_width_bytes)
+                                #csv.reader(io.TextIOWrapper(cresstream))
+                                buf = cresstream.readlines((maximum_fetch_size_bytes // val_dtype_width_bytes))
                                 if buf:
-                                    buf_array = np.frombuffer(buf, dtype=record_dtype)
-                                    rows = map(lambda t: t[0], buf_array)
-                                    cols = map(lambda t: t[1], buf_array)
-                                    vals = map(lambda t: t[2], buf_array)
+                                    df = pd.read_csv(io.StringIO("".join(buf)), sep=',', header=None, index_col=False)
+                                    rows = df.iloc[:, 0].values.astype(row_dtype)
+                                    cols = df.iloc[:, 1].values.astype(col_dtype)
+                                    vals = df.iloc[:, 2].values.astype(val_dtype)
                                     yield {
                                         'bin1_id': rows,
                                         'bin2_id': cols,
