@@ -9,7 +9,7 @@ with open("requirements.txt", mode="rt", encoding="utf-8") as f:
 setup(
     name='hict_utils',
     version='0.1.3rc1',
-    packages=list(set(['hict_utils', 'hict_utils.cool_to_hict']).union(find_packages())),
+    packages=list(set(['hict_utils', 'hict_utils.cool_to_hict', 'hict_utils.hict_to_cool']).union(find_packages())),
     url='https://genome.ifmo.ru',
     license='',
     author='Alexander Serdiukov, Anton Zamyatin and CT Lab ITMO University team',
