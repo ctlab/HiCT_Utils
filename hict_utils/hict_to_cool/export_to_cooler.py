@@ -152,10 +152,6 @@ class HiCTToCoolerConverter(object):
             col_dtype = np.int32
             col_dtype_width_bytes: int = int(np.dtype(col_dtype).itemsize) if col_dtype is not None else 4
             
-            dump_record_width_bytes: int = row_dtype_width_bytes+col_dtype_width_bytes+val_dtype_width_bytes # Since mcool requires int32 rows and columns
-                            
-            record_dtype = None
-            record_width_bytes = None
 
             with tempfile.NamedTemporaryFile("w+b") as tmpf:
                 with bz2.open(tmpf, mode="wt", compresslevel=5) as cstream:            
@@ -182,16 +178,6 @@ class HiCTToCoolerConverter(object):
                             
                             coo_record_row = np.rec.array(rows, dtype=[('bin1_id', row_dtype)])
                             coo_record_rcv = npr.append_fields(coo_record_row, data=[cols, sparse.data], names=['bin2_id', 'count'], dtypes=[col_dtype, val_dtype], usemask=False, asrecarray=True)
-                            # coo_bytes = coo_record_rcv.tobytes(order='C')
-                            # cstream.write(coo_bytes)
-                            # if record_dtype is None:
-                            #     record_dtype = copy.deepcopy(coo_record_rcv.dtype)
-                            # if record_width_bytes is None:
-                            #     record_width_bytes = len(coo_record_rcv[0].tobytes(order='C'))
-                            #     assert (
-                            #         record_width_bytes == dump_record_width_bytes
-                            #     ), f"Some padding/alignment was added? {record_width_bytes} != {dump_record_width_bytes}"
-                            # del coo_bytes
                             df = pd.DataFrame(coo_record_rcv)
                             df.to_csv(cstream, sep=',', header=None, index=None)
                             del coo_record_rcv
@@ -201,12 +187,6 @@ class HiCTToCoolerConverter(object):
                             print(f"Exporting raw pixeltable: {float(start_row_incl*total_bin_length + start_col_incl) / float(total_bin_length*total_bin_length)} Time: {datetime.now().strftime('%H:%M:%S')}", flush=True)
                             
                     print(f"Exported raw pixeltable, preparing to sort. Time: {datetime.now().strftime('%H:%M:%S')}", flush=True)
-                    # assert (
-                    #     record_dtype is not None
-                    # ), "Nothing was dumped and dtype not inferred?"
-                    # assert (
-                    #     record_width_bytes is not None
-                    # ), "Nothing was dumped and data width not inferred?"
                     
                 tmpf.seek(0)
                 with bz2.open(tmpf, mode="rt") as cstream:                       
