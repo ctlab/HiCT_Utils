@@ -15,61 +15,113 @@ from readerwriterlock import rwlock
 import multiprocessing
 import multiprocessing.managers
 
+import os
 
 def is_sorted(a: np.ndarray) -> bool:
     return np.all(a[:-1] <= a[1:])
 
 
-class CoolerToHiCTConverter(object):
+def convert_and_save_block_to_file(
+    arg_tuple: Tuple[str, str, int, int, int, int, Any, Any]
+) -> None:
+    (src_filename,
+     dst_filename,
+     resolution,
+     vstripe_l,
+     stripes_count,
+     submatrix_size,
+     value_dtype,
+     output_file_lock) = arg_tuple
+    # src_filename: str
+    # dst_filename: str
+    # resolution: int
+    # vstripe_l: int
+    # stripes_count: int
+    # submatrix_size: int
+    # value_dtype
 
-    def save_indirect_block(
-        self,
-        row_stripe_id: np.int64,
-        pixel_row_stripes: np.ndarray,
-        pixel_col_stripes: np.ndarray,
-        pixel_intra_stripe_row: np.ndarray,
-        pixel_intra_stripe_col: np.ndarray,
-        ordered_values: np.ndarray,
-        block_datasets: Tuple[Dataset, Dataset, Dataset, Dataset, Dataset, Dataset],
-        current_sparse_offset: np.int64,
-        current_dense_offset: np.int64,
-        stripes: List[StripeDescriptor],
-        submatrix_size: np.int64,
-    ) -> Tuple[np.int64, np.int64]:
-        (block_rows_ds, block_cols_ds, block_vals_ds, block_offset_ds,
-         block_length_ds, dense_blocks_ds) = block_datasets
+    with h5py.File(Path(src_filename).absolute(), mode='r', swmr=True) as src_file:
+        src_pixels = src_file[f'resolutions/{resolution}/pixels']
+        src_pixel_row: h5py.Dataset = src_pixels['bin1_id']
+        src_pixel_col: h5py.Dataset = src_pixels['bin2_id']
+        src_pixel_val: h5py.Dataset = src_pixels['count']
+        all_rows_start_indices: h5py.Dataset = src_file[
+            f'resolutions/{resolution}/indexes/bin1_offset']
 
-        # np.where(np.roll(pixel_col_stripes, 1) != pixel_col_stripes)[0]
-        block_start_indices = np.where(
-            pixel_col_stripes[:-1] != pixel_col_stripes[1:]
-        )[0] + 1
-        # Last element should store length of the pixel table
-        block_start_indices = np.hstack(
-            ((0,), block_start_indices, len(pixel_col_stripes)))
-        block_count: np.int64 = len(block_start_indices)-1
-        block_lengths = block_start_indices[1:] - block_start_indices[:-1]
-        stripe_count: np.int64 = np.int64(len(stripes))
+        singlerowstripe_pixel_row, singlerowstripe_pixel_col, singlerowstripe_pixel_val = (
+            np.array(src_pixel_row[all_rows_start_indices[vstripe_l*submatrix_size]:all_rows_start_indices[min(
+                (vstripe_l+1)*submatrix_size, len(all_rows_start_indices)-1)]], dtype=np.int32),
+            np.array(src_pixel_col[all_rows_start_indices[vstripe_l*submatrix_size]:all_rows_start_indices[min(
+                (vstripe_l+1)*submatrix_size, len(all_rows_start_indices)-1)]], dtype=np.int32),
+            np.array(src_pixel_val[all_rows_start_indices[vstripe_l*submatrix_size]:all_rows_start_indices[min(
+                (vstripe_l+1)*submatrix_size, len(all_rows_start_indices)-1)]], dtype=value_dtype),
+        )
+        current_sparse_offset: int = all_rows_start_indices[vstripe_l*submatrix_size]
+    
+    if len(singlerowstripe_pixel_row) <= 0:
+        return
 
-        for block_index in range(block_count):
-            block_start_index: np.int64 = block_start_indices[block_index]
-            block_col_stripe_id = pixel_col_stripes[block_start_index]
-            block_index_in_datasets = (
-                row_stripe_id*stripe_count + block_col_stripe_id
-            )
-            block_nonzero_element_count = block_lengths[block_index]
-            if block_nonzero_element_count <= 0:
-                continue
-            block_rows = pixel_intra_stripe_row[block_start_index:
-                                                block_start_index+block_nonzero_element_count]
-            block_cols = pixel_intra_stripe_col[block_start_index:
-                                                block_start_index+block_nonzero_element_count]
-            block_vals = ordered_values[block_start_index:
-                                        block_start_index+block_nonzero_element_count]
+    pixel_row_stripes = singlerowstripe_pixel_row // submatrix_size
+    pixel_col_stripes = singlerowstripe_pixel_col // submatrix_size
+    pixel_intra_stripe_row = singlerowstripe_pixel_row % submatrix_size
+    pixel_intra_stripe_col = singlerowstripe_pixel_col % submatrix_size
+
+    assert (
+        np.all(pixel_row_stripes == vstripe_l)
+    ), "Single row stripe contains pixels for different stripe??"
+
+    assert (
+        np.all(pixel_row_stripes == pixel_row_stripes[0])
+    ), "Single row stripe contains pixels for multiple stripes??"
+
+    chunked_order = np.lexsort(
+        (pixel_intra_stripe_col, pixel_intra_stripe_row, pixel_row_stripes, pixel_col_stripes))
+
+    pixel_row_stripes = pixel_row_stripes[chunked_order]
+    pixel_col_stripes = pixel_col_stripes[chunked_order]
+    pixel_intra_stripe_row = pixel_intra_stripe_row[chunked_order]
+    pixel_intra_stripe_col = pixel_intra_stripe_col[chunked_order]
+    singlerowstripe_pixel_val = singlerowstripe_pixel_val[chunked_order]
+
+    block_start_indices = np.where(
+        pixel_col_stripes[:-1] != pixel_col_stripes[1:]
+    )[0] + 1
+    # Last element should store length of the pixel table
+    block_start_indices = np.hstack(
+        ((0,), block_start_indices, len(pixel_col_stripes)))
+    block_count: int = len(block_start_indices)-1
+    block_lengths = block_start_indices[1:] - block_start_indices[:-1]
+
+    for block_index in range(block_count):
+        block_start_index: np.int64 = block_start_indices[block_index]
+        block_col_stripe_id = pixel_col_stripes[block_start_index]
+        block_index_in_datasets = (
+            vstripe_l*stripes_count + block_col_stripe_id
+        )
+        block_nonzero_element_count = block_lengths[block_index]
+        if block_nonzero_element_count <= 0:
+            continue
+        block_rows = pixel_intra_stripe_row[block_start_index:
+                                            block_start_index+block_nonzero_element_count]
+        block_cols = pixel_intra_stripe_col[block_start_index:
+                                            block_start_index+block_nonzero_element_count]
+        block_vals = singlerowstripe_pixel_val[block_start_index:
+                                               block_start_index+block_nonzero_element_count]
+
+        with output_file_lock, h5py.File(dst_filename, mode='r+') as dst_file:
+            res_group = dst_file[f'resolutions/{resolution}/treap_coo']
+            block_rows_ds: h5py.Dataset = res_group['block_rows']
+            block_cols_ds: h5py.Dataset = res_group['block_cols']
+            block_vals_ds: h5py.Dataset = res_group['block_vals']
+            block_offset_ds: h5py.Dataset = res_group['block_offset']
+            block_length_ds: h5py.Dataset = res_group['block_length']
+            dense_blocks_ds: h5py.Dataset = res_group['dense_blocks']
 
             if (
                 block_nonzero_element_count >= (
                     (submatrix_size * submatrix_size) // 2)
             ):
+                current_dense_offset = dense_blocks_ds.shape[0]
                 block_offset_ds[block_index_in_datasets] = - \
                     current_dense_offset - 1
                 block_length_ds[block_index_in_datasets] = block_nonzero_element_count
@@ -87,6 +139,7 @@ class CoolerToHiCTConverter(object):
                 dense_blocks_ds[current_dense_offset,
                                 0, :, :] = mx_coo.toarray()
                 current_dense_offset += 1
+                # In sparse table we save zeros so that offsets could be predicted for multiprocessing
             else:
                 block_offset_ds[block_index_in_datasets] = current_sparse_offset
                 block_length_ds[block_index_in_datasets] = block_nonzero_element_count
@@ -96,16 +149,18 @@ class CoolerToHiCTConverter(object):
                               block_nonzero_element_count] = block_cols
                 block_vals_ds[current_sparse_offset:current_sparse_offset +
                               block_nonzero_element_count] = block_vals
-                current_sparse_offset += block_nonzero_element_count
+            dst_file.flush()
+            current_sparse_offset += block_nonzero_element_count
 
-        return current_sparse_offset, current_dense_offset
+
+class CoolerToHiCTConverter(object):
 
     def dump_stripe_data(
             self,
             src_file: h5py.File,
             dst_file: h5py.File,
             submatrix_size: np.int64,
-            resolution: np.int64,
+            resolution: int,
             path_to_name_and_length: str = '/chroms/',
             additional_dataset_creation_args: Optional[dict] = None
     ) -> List[StripeDescriptor]:
@@ -163,13 +218,13 @@ class CoolerToHiCTConverter(object):
             src_file: h5py.File,
             dst_file: h5py.File,
             path_to_name_and_length: str,
-            resolutions: List[np.int64],
-            stripes: Dict[np.int64, List[StripeDescriptor]],
+            resolutions: List[int],
+            stripes: Dict[int, List[StripeDescriptor]],
             submatrix_size: np.int64,
             additional_dataset_creation_args: Optional[dict] = None
     ) -> List[ContigDescriptor]:  # np.ndarray:
         # TODO: Maybe in .mcool different contigs may be present/not present at different resolutions
-        anyresolution: np.int64 = resolutions[0]
+        anyresolution: int = resolutions[0]
         contig_info_group: h5py.Group = dst_file.create_group('/contig_info/')
         contig_info_group.copy(
             src_file[f'{path_to_name_and_length}/name'], 'contig_name')
@@ -229,7 +284,7 @@ class CoolerToHiCTConverter(object):
                 resolution_to_contig_length_bins[resolution] > 0
             ),        "Zero-length contigs are present??"
 
-        def generate_atus_for_contig(contig_id: np.int64, resolution: np.int64) -> List[ATUDescriptor]:
+        def generate_atus_for_contig(contig_id: np.int64, resolution: int) -> List[ATUDescriptor]:
             start_bin: np.int64 = contig_start_bins_at_resolution[resolution][contig_id]
             # ctg_length: np.int64 = resolution_to_contig_length_bins[resolution][contig_id]
             end_bin: np.int64 = start_bin + \
@@ -261,15 +316,6 @@ class CoolerToHiCTConverter(object):
             ))
 
             start_bin += (len(atus)-1)*submatrix_size
-
-            # while start_bin < end_bin:
-            #     atus.append(ATUDescriptor.make_atu_descriptor(
-            #         stripes[resolution][start_bin // submatrix_size],
-            #         start_bin % submatrix_size,
-            #         ((min(submatrix_size, end_bin - start_bin)-1)%submatrix_size)+1,
-            #         ATUDirection.FORWARD
-            #     ))
-            #     start_bin += submatrix_size
             if start_bin < end_bin:
                 atus.append(ATUDescriptor.make_atu_descriptor(
                     stripes[resolution][start_stripe_id +
@@ -292,7 +338,6 @@ class CoolerToHiCTConverter(object):
                     resolution][contig_id] > 1 else ContigHideType.AUTO_HIDDEN for resolution in resolutions},
                 atus={resolution: generate_atus_for_contig(
                     contig_id, resolution) for resolution in resolutions},
-                # scaffold_id=None
             ) for contig_id in range(0, contig_count)
         ]
 
@@ -362,33 +407,37 @@ class CoolerToHiCTConverter(object):
         src_file_path: Path,
         dst_file_path: Path,
         get_name_and_length_path: Callable[[np.int64], str],
+        converter_processes_count: int = 0,
         mp_manager: Optional[multiprocessing.managers.SyncManager] = None
     ) -> None:
         self.src_file_path: Path = src_file_path
         self.dst_file_path: Path = dst_file_path
         self.get_name_and_length_path: Callable[[
-            np.int64], str] = get_name_and_length_path
+            int], str] = get_name_and_length_path
         self.resolution_progress: float = 0.0
         self.total_progress: float = 0.0
         self.converting: bool = False
         self.mp_manager = mp_manager if mp_manager is not None else multiprocessing.Manager()
-        # mp_lock = self.mp_manager.RLock()
         self.progress_lock = rwlock.RWLockWrite(
             lock_factory=lambda: self.mp_manager.RLock())
+        cpu_count = os.cpu_count()
+        if cpu_count is None:
+            cpu_count = 1
+        self.converter_processes_count = converter_processes_count if converter_processes_count > 0 else cpu_count
 
     def resetProgress(self, converting: bool = False):
         with self.progress_lock.gen_wlock():
             self.converting = converting
             self.resolution_progress: float = 0.0
             self.total_progress: float = 0.0
-        
+
     def get_progress(self):
         with self.progress_lock.gen_rlock():
             return self.converting, self.resolution_progress, self.total_progress
 
     def convert(
             self,
-            resolutions: Optional[List[np.int64]] = None,
+            resolutions: Optional[List[int]] = None,
             additional_dataset_creation_args: Optional[dict] = None
     ):
         self.resetProgress(True)
@@ -398,17 +447,21 @@ class CoolerToHiCTConverter(object):
             if additional_dataset_creation_args is None:
                 additional_dataset_creation_args = {}
 
-            with h5py.File(name=self.src_file_path, mode='r') as src_file:
+            output_file_lock = self.mp_manager.RLock()
+
+            with h5py.File(name=self.src_file_path, mode='r', swmr=True) as src_file:
                 if resolutions is None:
-                    resolutions = [np.int64(sdn) for sdn in filter(
+                    resolutions = [int(sdn) for sdn in filter(
                         lambda s: s.isnumeric(), src_file['resolutions'].keys())]
-                with h5py.File(name=self.dst_file_path, mode='w') as dst_file:
-                    resolution_to_stripes: Dict[np.int64,
+                for resolution_ord, resolution in enumerate(sorted(resolutions, reverse=True)):
+                    resolution_to_stripes: Dict[int,
                                                 List[StripeDescriptor]] = dict()
-                    for resolution_ord, resolution in enumerate(sorted(resolutions, reverse=True)):
-                        with self.progress_lock.gen_wlock():
-                            self.total_progress = float(max(0, (resolution_ord - 1))) / float(len(resolutions))
-                        print(f"Resolution {resolution} out of {resolutions}")
+                    with self.progress_lock.gen_wlock():
+                        self.total_progress = float(
+                            max(0, (resolution_ord - 1))) / float(len(resolutions))
+                        print(f"Resolution {resolution} out of {resolutions}")          
+                    
+                    with output_file_lock, h5py.File(name=self.dst_file_path, mode='w') as dst_file:    
                         stripes = self.dump_stripe_data(
                             src_file,
                             dst_file,
@@ -419,7 +472,7 @@ class CoolerToHiCTConverter(object):
                         )
                         resolution_to_stripes[resolution] = stripes
                         dst_file['resolutions'].attrs.create(
-                            "hict_version", "0.1.3.1a")
+                            "hict_version", "0.1.3.1b")
                         res_group: h5py.Group = dst_file.create_group(
                             f'resolutions/{resolution}/treap_coo')
                         res_group.attrs.create(
@@ -484,60 +537,31 @@ class CoolerToHiCTConverter(object):
                             **ds_creation_args,
                         )
 
-                        block_datasets: Tuple[Dataset, Dataset, Dataset, Dataset, Dataset, Dataset] = (
-                            block_rows, block_cols, block_vals, block_offset, block_length, dense_blocks)
-
                         res_group.attrs.create(
                             name='stripes_count', data=stripes_count)
+                        dst_file.flush()               
 
-                        current_sparse_offset: np.int64 = 0
-                        current_dense_offset: np.int64 = 0
+                    arg_tuples = zip(
+                        stripes_count *
+                        (str(self.src_file_path),),
+                        stripes_count *
+                        (str(self.dst_file_path),),
+                        stripes_count * (resolution,),
+                        range(0, stripes_count),
+                        stripes_count * (stripes_count,),
+                        stripes_count * (submatrix_size,),
+                        stripes_count *
+                        (src_pixel_val.dtype,),
+                        stripes_count *
+                        (output_file_lock,),
+                    )
 
-                        for vstripe_l in range(0, stripes_count):
-                            with self.progress_lock.gen_wlock():
-                                self.resolution_progress = float(max(0, vstripe_l - 1)) / float(stripes_count)
-                            singlerowstripe_pixel_row, singlerowstripe_pixel_col, singlerowstripe_pixel_val = (
-                                src_pixel_row[all_rows_start_indices[vstripe_l*submatrix_size]:all_rows_start_indices[min(
-                                    (vstripe_l+1)*submatrix_size, len(all_rows_start_indices)-1)]],
-                                src_pixel_col[all_rows_start_indices[vstripe_l*submatrix_size]:all_rows_start_indices[min(
-                                    (vstripe_l+1)*submatrix_size, len(all_rows_start_indices)-1)]],
-                                src_pixel_val[all_rows_start_indices[vstripe_l*submatrix_size]:all_rows_start_indices[min(
-                                    (vstripe_l+1)*submatrix_size, len(all_rows_start_indices)-1)]],
-                            )
-                            if len(singlerowstripe_pixel_row) <= 0:
-                                print("Zero-length stripe subarray")
-                                continue
-                            pixel_row_stripes = singlerowstripe_pixel_row // submatrix_size
-                            pixel_col_stripes = singlerowstripe_pixel_col // submatrix_size
-                            pixel_intra_stripe_row = singlerowstripe_pixel_row % submatrix_size
-                            pixel_intra_stripe_col = singlerowstripe_pixel_col % submatrix_size
-
-                            assert (
-                                np.all(pixel_row_stripes == vstripe_l)
-                            ), "Single row stripe contains pixels for different stripe??"
-
-                            assert (
-                                np.all(pixel_row_stripes == pixel_row_stripes[0])
-                            ), "Single row stripe contains pixels for multiple stripes??"
-
-                            chunked_order = np.lexsort(
-                                (pixel_intra_stripe_col, pixel_intra_stripe_row, pixel_row_stripes, pixel_col_stripes))
-
-                            current_sparse_offset, current_dense_offset = self.save_indirect_block(
-                                vstripe_l,
-                                pixel_row_stripes[chunked_order],
-                                pixel_col_stripes[chunked_order],
-                                pixel_intra_stripe_row[chunked_order],
-                                pixel_intra_stripe_col[chunked_order],
-                                singlerowstripe_pixel_val[chunked_order],
-                                block_datasets,
-                                current_sparse_offset,
-                                current_dense_offset,
-                                stripes,
-                                submatrix_size
-                            )
-                        dst_file.flush()
-
+                    with multiprocessing.Pool(self.converter_processes_count) as pool:
+                        pool.map(convert_and_save_block_to_file,
+                                    arg_tuples
+                                    )
+                    
+                with output_file_lock, h5py.File(name=self.dst_file_path, mode='w') as dst_file:
                     contigs, contig_id_to_contig_length_bp = self.dump_contig_data(
                         src_file,
                         dst_file,
@@ -547,7 +571,8 @@ class CoolerToHiCTConverter(object):
                         submatrix_size,
                         additional_dataset_creation_args
                     )
-                    dst_file.flush()
+
+                    
         finally:
             with self.progress_lock.gen_wlock():
                 self.converting = False
@@ -572,6 +597,8 @@ def main(cmdline: Optional[List[Any]]):
                         help="Disable HDF5 shuffle filter", dest="shuffle")
     parser.add_argument("-r", "--resolutions", nargs='*',
                         type=int, help="Select resolutions that should be converted (if not specified, converts all that are found)", dest="resolutions")
+    parser.add_argument("-p", "--process-count",
+                        type=int, help="Number of export processes to spawn", dest="nproc")
     parser.add_argument("input", help="Input file path",
                         type=lambda f: cool_file_checker(parser, f))
     parser.add_argument(
@@ -590,6 +617,8 @@ def main(cmdline: Optional[List[Any]]):
         additional_dataset_creation_args['compression'] = (
             args.compression.lower()
         )
+        
+    nproc = args.nproc if args.nproc is not None else 0
 
     path_to_name_and_length = {
         "default": (lambda r: f'/resolutions/{str(r)}/chroms'),
@@ -602,7 +631,8 @@ def main(cmdline: Optional[List[Any]]):
         Path(args.input).absolute(),
         Path(
             args.output if args.output is not None else f"{args.input}.hict.hdf5").absolute(),
-        path_to_name_and_length
+        path_to_name_and_length,
+        converter_processes_count=nproc
     )
 
     converter.convert(
