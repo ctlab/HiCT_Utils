@@ -17,6 +17,7 @@ import multiprocessing.managers
 
 import os
 
+
 def is_sorted(a: np.ndarray) -> bool:
     return np.all(a[:-1] <= a[1:])
 
@@ -57,7 +58,7 @@ def convert_and_save_block_to_file(
                 (vstripe_l+1)*submatrix_size, len(all_rows_start_indices)-1)]], dtype=value_dtype),
         )
         current_sparse_offset: int = all_rows_start_indices[vstripe_l*submatrix_size]
-    
+
     if len(singlerowstripe_pixel_row) <= 0:
         return
 
@@ -108,39 +109,46 @@ def convert_and_save_block_to_file(
         block_vals = singlerowstripe_pixel_val[block_start_index:
                                                block_start_index+block_nonzero_element_count]
 
-        with output_file_lock, h5py.File(dst_filename, mode='r+') as dst_file:
-            res_group = dst_file[f'resolutions/{resolution}/treap_coo']
-            block_rows_ds: h5py.Dataset = res_group['block_rows']
-            block_cols_ds: h5py.Dataset = res_group['block_cols']
-            block_vals_ds: h5py.Dataset = res_group['block_vals']
-            block_offset_ds: h5py.Dataset = res_group['block_offset']
-            block_length_ds: h5py.Dataset = res_group['block_length']
-            dense_blocks_ds: h5py.Dataset = res_group['dense_blocks']
-
-            if (
-                block_nonzero_element_count >= (
-                    (submatrix_size * submatrix_size) // 2)
-            ):
+        if (
+            block_nonzero_element_count >= (
+                (submatrix_size * submatrix_size) // 2)
+        ):
+            mx_coo = coo_matrix(
+                (
+                    block_vals,
+                    (
+                        block_rows,
+                        block_cols
+                    )
+                ),
+                shape=(submatrix_size, submatrix_size)
+            )
+            dense = mx_coo.toarray()
+            with output_file_lock, h5py.File(dst_filename, mode='r+') as dst_file:
+                res_group = dst_file[f'resolutions/{resolution}/treap_coo']
+                block_rows_ds: h5py.Dataset = res_group['block_rows']
+                block_cols_ds: h5py.Dataset = res_group['block_cols']
+                block_vals_ds: h5py.Dataset = res_group['block_vals']
+                block_offset_ds: h5py.Dataset = res_group['block_offset']
+                block_length_ds: h5py.Dataset = res_group['block_length']
+                dense_blocks_ds: h5py.Dataset = res_group['dense_blocks']
                 current_dense_offset = dense_blocks_ds.shape[0]
                 block_offset_ds[block_index_in_datasets] = - \
                     current_dense_offset - 1
                 block_length_ds[block_index_in_datasets] = block_nonzero_element_count
                 dense_blocks_ds.resize(1 + current_dense_offset, axis=0)
-                mx_coo = coo_matrix(
-                    (
-                        block_vals,
-                        (
-                            block_rows,
-                            block_cols
-                        )
-                    ),
-                    shape=(submatrix_size, submatrix_size)
-                )
                 dense_blocks_ds[current_dense_offset,
-                                0, :, :] = mx_coo.toarray()
-                current_dense_offset += 1
-                # In sparse table we save zeros so that offsets could be predicted for multiprocessing
-            else:
+                                0, :, :] = dense
+        else:
+            with output_file_lock, h5py.File(dst_filename, mode='r+') as dst_file:
+                res_group = dst_file[f'resolutions/{resolution}/treap_coo']
+                block_rows_ds: h5py.Dataset = res_group['block_rows']
+                block_cols_ds: h5py.Dataset = res_group['block_cols']
+                block_vals_ds: h5py.Dataset = res_group['block_vals']
+                block_offset_ds: h5py.Dataset = res_group['block_offset']
+                block_length_ds: h5py.Dataset = res_group['block_length']
+                dense_blocks_ds: h5py.Dataset = res_group['dense_blocks']
+
                 block_offset_ds[block_index_in_datasets] = current_sparse_offset
                 block_length_ds[block_index_in_datasets] = block_nonzero_element_count
                 block_rows_ds[current_sparse_offset:current_sparse_offset +
@@ -149,8 +157,7 @@ def convert_and_save_block_to_file(
                               block_nonzero_element_count] = block_cols
                 block_vals_ds[current_sparse_offset:current_sparse_offset +
                               block_nonzero_element_count] = block_vals
-            dst_file.flush()
-            current_sparse_offset += block_nonzero_element_count
+        current_sparse_offset += block_nonzero_element_count
 
 
 class CoolerToHiCTConverter(object):
@@ -453,15 +460,17 @@ class CoolerToHiCTConverter(object):
                 if resolutions is None:
                     resolutions = [int(sdn) for sdn in filter(
                         lambda s: s.isnumeric(), src_file['resolutions'].keys())]
-                for resolution_ord, resolution in enumerate(sorted(resolutions, reverse=True)):
+
+            for resolution_ord, resolution in enumerate(sorted(resolutions, reverse=True)):
+                with h5py.File(name=self.src_file_path, mode='r', swmr=True) as src_file:
                     resolution_to_stripes: Dict[int,
                                                 List[StripeDescriptor]] = dict()
                     with self.progress_lock.gen_wlock():
                         self.total_progress = float(
                             max(0, (resolution_ord - 1))) / float(len(resolutions))
-                        print(f"Resolution {resolution} out of {resolutions}")          
-                    
-                    with output_file_lock, h5py.File(name=self.dst_file_path, mode='w') as dst_file:    
+                        print(f"Resolution {resolution} out of {resolutions}")
+
+                    with output_file_lock, h5py.File(name=self.dst_file_path, mode='w') as dst_file:
                         stripes = self.dump_stripe_data(
                             src_file,
                             dst_file,
@@ -539,40 +548,39 @@ class CoolerToHiCTConverter(object):
 
                         res_group.attrs.create(
                             name='stripes_count', data=stripes_count)
-                        dst_file.flush()               
+                        dst_file.flush()
 
-                    arg_tuples = zip(
-                        stripes_count *
-                        (str(self.src_file_path),),
-                        stripes_count *
-                        (str(self.dst_file_path),),
-                        stripes_count * (resolution,),
-                        range(0, stripes_count),
-                        stripes_count * (stripes_count,),
-                        stripes_count * (submatrix_size,),
-                        stripes_count *
-                        (src_pixel_val.dtype,),
-                        stripes_count *
-                        (output_file_lock,),
-                    )
+                arg_tuples = zip(
+                    stripes_count *
+                    (str(self.src_file_path),),
+                    stripes_count *
+                    (str(self.dst_file_path),),
+                    stripes_count * (resolution,),
+                    range(0, stripes_count),
+                    stripes_count * (stripes_count,),
+                    stripes_count * (submatrix_size,),
+                    stripes_count *
+                    (src_pixel_val.dtype,),
+                    stripes_count *
+                    (output_file_lock,),
+                )
 
-                    with multiprocessing.Pool(self.converter_processes_count) as pool:
-                        pool.map(convert_and_save_block_to_file,
-                                    arg_tuples
-                                    )
-                    
-                with output_file_lock, h5py.File(name=self.dst_file_path, mode='w') as dst_file:
-                    contigs, contig_id_to_contig_length_bp = self.dump_contig_data(
-                        src_file,
-                        dst_file,
-                        self.get_name_and_length_path(resolutions[0]),
-                        resolutions,
-                        resolution_to_stripes,
-                        submatrix_size,
-                        additional_dataset_creation_args
-                    )
+                with multiprocessing.Pool(self.converter_processes_count) as pool:
+                    pool.map(convert_and_save_block_to_file,
+                             arg_tuples
+                             )
 
-                    
+            with output_file_lock, h5py.File(name=self.src_file_path, mode='r', swmr=True) as src_file, h5py.File(name=self.dst_file_path, mode='r+') as dst_file:
+                contigs, contig_id_to_contig_length_bp = self.dump_contig_data(
+                    src_file,
+                    dst_file,
+                    self.get_name_and_length_path(resolutions[0]),
+                    resolutions,
+                    resolution_to_stripes,
+                    submatrix_size,
+                    additional_dataset_creation_args
+                )
+
         finally:
             with self.progress_lock.gen_wlock():
                 self.converting = False
@@ -617,7 +625,7 @@ def main(cmdline: Optional[List[Any]]):
         additional_dataset_creation_args['compression'] = (
             args.compression.lower()
         )
-        
+
     nproc = args.nproc if args.nproc is not None else 0
 
     path_to_name_and_length = {
