@@ -86,7 +86,8 @@ class HiCTToCoolerConverter(object):
                 return f"unscaffolded_contig_region_{unnamed_count}"
 
         scaffold_names_map = map(get_name, map(lambda t: t[0], scaffolds))
-        scaffold_names_nd = np.array(tuple(scaffold_names_map))
+        scaffold_names_list = tuple(scaffold_names_map)
+        # scaffold_names_nd = np.array(scaffold_names_list)
         # maximum_length = max(map(len, scaffold_names_map))
 
         for resolution in resolutions:
@@ -115,7 +116,7 @@ class HiCTToCoolerConverter(object):
             bin_to_scaffold = np.zeros(
                 shape=(total_bin_length), dtype=np.int32)
             for scaffold_index in range(len(scaffold_length_bins)):
-                bin_to_scaffold[scaffold_length_bins_prefix_sum[i]:scaffold_length_bins_prefix_sum[1+i]] = scaffold_index
+                bin_to_scaffold[scaffold_length_bins_prefix_sum[scaffold_index]:scaffold_length_bins_prefix_sum[1+scaffold_index]] = scaffold_index
             # /resolutions/1000/bins/start:
             # /resolutions/1000/bins/end:
             bins_start = np.zeros(shape=(total_bin_length,), dtype=np.int32)
@@ -128,8 +129,8 @@ class HiCTToCoolerConverter(object):
                 bins_end[scaffold_length_bins_prefix_sum[1+scaffold_index]-1
                          ] = np.int32(scaffold_length_bp[scaffold_index])
 
-            bins = pd.DataFrame.from_dict(
-                {'chrom': scaffold_names_nd[bin_to_scaffold], 'start': bins_start, 'end': bins_end})
+            # bins = pd.DataFrame.from_dict({'chrom': scaffold_names_nd[bin_to_scaffold], 'start': bins_start, 'end': bins_end})
+            bins = pd.DataFrame.from_dict({'chrom': (scaffold_names_list[s] for s in bin_to_scaffold), 'start': bins_start, 'end': bins_end})
 
             val_dtype = self.chunked_file.dtype
             val_dtype_width_bytes: int = int(
@@ -137,45 +138,46 @@ class HiCTToCoolerConverter(object):
             number_of_blocks_to_fetch: int = int(max(1, maximum_fetch_size_bytes // (
                 val_dtype_width_bytes * self.chunked_file.dense_submatrix_size[resolution] * self.chunked_file.dense_submatrix_size[resolution])))
 
-            def fetch_chunk():
-                for start_row_incl in range(0, total_bin_length, self.chunked_file.dense_submatrix_size[resolution]):
-                    end_row_excl = min(
-                        start_row_incl + self.chunked_file.dense_submatrix_size[resolution], total_bin_length)
-                    for start_col_incl in range(start_row_incl, total_bin_length, self.chunked_file.dense_submatrix_size[resolution] * number_of_blocks_to_fetch):
-                        end_col_excl = min(
-                            start_col_incl + self.chunked_file.dense_submatrix_size[resolution] * number_of_blocks_to_fetch, total_bin_length)
-                        dense, _, _ = self.chunked_file.get_submatrix(
-                            resolution,
-                            start_row_incl,
-                            start_col_incl,
-                            end_row_excl,
-                            end_col_excl,
-                            exclude_hidden_contigs=False
-                        )
-                        if start_row_incl == start_col_incl:
-                            dense = np.triu(dense)
-                        sparse = coo_array(dense, dtype=(
-                            self.chunked_file.dtype if self.chunked_file.dtype is not None else np.int32))
-                        rows = sparse.row + start_row_incl
-                        cols = sparse.col + start_col_incl
-                        # coo_record_row = np.rec.array(sparse.row + start_row_incl, dtype=('row', row_dtype))
-                        # coo_record_rcv = npr.append_fields(coo_record_row, data=(sparse.col, sparse.data), names=('col', 'val'), dtypes=(col_dtype, val_dtype), usemask=False, asrecarray=True)
-                        ind = np.lexsort((cols, rows))
-                        coo_chunk = {
-                            'bin1_id': rows[ind],
-                            'bin2_id': cols[ind],
-                            'count': sparse.data[ind]
-                        }
-                        # print("Yielding chunk", flush=True)
-                        yield coo_chunk
-                        print(f"Exported: {float(start_row_incl*total_bin_length + start_col_incl) / float(total_bin_length*total_bin_length)} Time: {datetime.now().strftime('%H:%M:%S')}", flush=True)
+            def fetch_chunk(start_row_incl, start_col_incl):
+                #for start_row_incl in range(0, total_bin_length, self.chunked_file.dense_submatrix_size[resolution]):
+                end_row_excl = min(
+                    start_row_incl + self.chunked_file.dense_submatrix_size[resolution], total_bin_length)
+                #for start_col_incl in range(start_row_incl, total_bin_length, self.chunked_file.dense_submatrix_size[resolution] * number_of_blocks_to_fetch):
+                end_col_excl = min(
+                    start_col_incl + self.chunked_file.dense_submatrix_size[resolution] * number_of_blocks_to_fetch, total_bin_length)
+                dense, _, _ = self.chunked_file.get_submatrix(
+                    resolution,
+                    start_row_incl,
+                    start_col_incl,
+                    end_row_excl,
+                    end_col_excl,
+                    exclude_hidden_contigs=False
+                )
+                if start_row_incl == start_col_incl:
+                    dense = np.triu(dense)
+                sparse = coo_array(dense, dtype=(
+                    self.chunked_file.dtype if self.chunked_file.dtype is not None else np.int32))
+                rows = sparse.row + start_row_incl
+                cols = sparse.col + start_col_incl
+                # coo_record_row = np.rec.array(sparse.row + start_row_incl, dtype=('row', row_dtype))
+                # coo_record_rcv = npr.append_fields(coo_record_row, data=(sparse.col, sparse.data), names=('col', 'val'), dtypes=(col_dtype, val_dtype), usemask=False, asrecarray=True)
+                ind = np.lexsort((cols, rows))
+                coo_chunk = pd.DataFrame.from_dict({
+                    'bin1_id': rows[ind],
+                    'bin2_id': cols[ind],
+                    'count': sparse.data[ind]
+                })
+                # print("Yielding chunk", flush=True)
+                #yield coo_chunk
+                print(f"Exported: {float(start_row_incl*total_bin_length + start_col_incl) / float(total_bin_length*total_bin_length)} Time: {datetime.now().strftime('%H:%M:%S')}", flush=True)
+                return coo_chunk
 
             #pixels_generator=(fetch_chunk(start_row_incl, start_col_incl) for )
 
             cooler.create_cooler(
                 cool_uri=f"{str(self.output_file_path.absolute())}::/resolutions/{resolution}",
                 bins=bins,
-                pixels=fetch_chunk(),#(fetch_chunk(start_row_incl, start_col_incl) for),
+                pixels=(fetch_chunk(start_row_incl, start_col_incl) for start_row_incl in range(0, total_bin_length, self.chunked_file.dense_submatrix_size[resolution]) for start_col_incl in range(start_row_incl, total_bin_length, self.chunked_file.dense_submatrix_size[resolution] * number_of_blocks_to_fetch)),#fetch_chunk(),#(fetch_chunk(start_row_incl, start_col_incl) for),
                 symmetric_upper=True,
                 ordered=False,
                 h5opts=ds_args

@@ -230,14 +230,15 @@ class CoolerToHiCTConverter(object):
             submatrix_size: np.int64,
             additional_dataset_creation_args: Optional[dict] = None
     ) -> List[ContigDescriptor]:  # np.ndarray:
+        resolutions = tuple(map(int, resolutions))
         # TODO: Maybe in .mcool different contigs may be present/not present at different resolutions
-        anyresolution: int = resolutions[0]
+        anyresolution: int = int(resolutions[0])
         contig_info_group: h5py.Group = dst_file.create_group('/contig_info/')
         contig_info_group.copy(
             src_file[f'{path_to_name_and_length}/name'], 'contig_name')
         contig_names: h5py.Dataset = src_file[f'{path_to_name_and_length}/name']
 
-        contig_count: np.int64 = len(contig_info_group['contig_name'])
+        contig_count: int = len(contig_info_group['contig_name'])
 
         if additional_dataset_creation_args is None:
             additional_dataset_creation_args = {}
@@ -460,6 +461,7 @@ class CoolerToHiCTConverter(object):
                 if resolutions is None:
                     resolutions = [int(sdn) for sdn in filter(
                         lambda s: s.isnumeric(), src_file['resolutions'].keys())]
+                resolutions = tuple(map(int, resolutions))
 
             for resolution_ord, resolution in enumerate(sorted(resolutions, reverse=True)):
                 with h5py.File(name=self.src_file_path, mode='r', swmr=True) as src_file:
@@ -479,7 +481,7 @@ class CoolerToHiCTConverter(object):
                             self.get_name_and_length_path(resolution),
                             additional_dataset_creation_args
                         )
-                        resolution_to_stripes[resolution] = stripes
+                        resolution_to_stripes[int(resolution)] = stripes
                         dst_file['resolutions'].attrs.create(
                             "hict_version", "0.1.3.1b")
                         res_group: h5py.Group = dst_file.create_group(
@@ -574,7 +576,7 @@ class CoolerToHiCTConverter(object):
                 contigs, contig_id_to_contig_length_bp = self.dump_contig_data(
                     src_file,
                     dst_file,
-                    self.get_name_and_length_path(resolutions[0]),
+                    self.get_name_and_length_path(int(resolutions[0])),
                     resolutions,
                     resolution_to_stripes,
                     submatrix_size,
