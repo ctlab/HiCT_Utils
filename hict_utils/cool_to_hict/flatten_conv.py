@@ -139,6 +139,7 @@ def convert_and_save_block_to_file(
                 dense_blocks_ds.resize(1 + current_dense_offset, axis=0)
                 dense_blocks_ds[current_dense_offset,
                                 0, :, :] = dense
+                dst_file.flush()
         else:
             with output_file_lock, h5py.File(dst_filename, mode='r+', libver='earliest') as dst_file:
                 res_group = dst_file[f'resolutions/{resolution}/treap_coo']
@@ -157,6 +158,7 @@ def convert_and_save_block_to_file(
                               block_nonzero_element_count] = block_cols
                 block_vals_ds[current_sparse_offset:current_sparse_offset +
                               block_nonzero_element_count] = block_vals
+                dst_file.flush()
         current_sparse_offset += block_nonzero_element_count
 
 
@@ -449,144 +451,146 @@ class CoolerToHiCTConverter(object):
             additional_dataset_creation_args: Optional[dict] = None
     ):
         self.resetProgress(True)
-        try:
-            submatrix_size: np.int64 = 256
-            hdf5_max_chunk_size: np.int64 = 32 * 1024 * 1024 * 8
-            if additional_dataset_creation_args is None:
-                additional_dataset_creation_args = {}
+        # try:
+        submatrix_size: np.int64 = 256
+        hdf5_max_chunk_size: np.int64 = 32 * 1024 * 1024 * 8
+        if additional_dataset_creation_args is None:
+            additional_dataset_creation_args = {}
 
-            output_file_lock = self.mp_manager.RLock()
+        output_file_lock = self.mp_manager.RLock()
 
+        with h5py.File(name=self.src_file_path, mode='r', swmr=True) as src_file:
+            if resolutions is None:
+                resolutions = [int(sdn) for sdn in filter(
+                    lambda s: s.isnumeric(), src_file['resolutions'].keys())]
+            resolutions = tuple(map(int, resolutions))
+
+        resolution_to_stripes: Dict[int,
+                                            List[StripeDescriptor]] = dict()
+
+        for resolution_ord, resolution in enumerate(sorted(resolutions, reverse=True)):
             with h5py.File(name=self.src_file_path, mode='r', swmr=True) as src_file:
-                if resolutions is None:
-                    resolutions = [int(sdn) for sdn in filter(
-                        lambda s: s.isnumeric(), src_file['resolutions'].keys())]
-                resolutions = tuple(map(int, resolutions))
+                with self.progress_lock.gen_wlock():
+                    self.total_progress = float(
+                        max(0, (resolution_ord - 1))) / float(len(resolutions))
+                    print(f"Resolution {resolution} out of {resolutions}")
 
-            resolution_to_stripes: Dict[int,
-                                                List[StripeDescriptor]] = dict()
+                with output_file_lock, h5py.File(name=self.dst_file_path, mode='w', libver='earliest') as dst_file:
+                    stripes = self.dump_stripe_data(
+                        src_file,
+                        dst_file,
+                        submatrix_size,
+                        resolution,
+                        self.get_name_and_length_path(resolution),
+                        additional_dataset_creation_args
+                    )
+                    resolution_to_stripes[int(resolution)] = stripes
+                    dst_file['resolutions'].attrs.create(
+                        "hict_version", "0.1.3.1b")
+                    res_group: h5py.Group = dst_file.create_group(
+                        f'resolutions/{resolution}/treap_coo')
+                    res_group.attrs.create(
+                        name='dense_submatrix_size', data=submatrix_size)
+                    res_group.attrs.create(
+                        name='hdf5_max_chunk_size', data=hdf5_max_chunk_size)
+                    src_bins_count = len(
+                        src_file[f'resolutions/{resolution}/bins/end'])
+                    src_pixels = src_file[f'resolutions/{resolution}/pixels']
+                    src_pixel_row: h5py.Dataset = src_pixels['bin1_id']
+                    src_pixel_col: h5py.Dataset = src_pixels['bin2_id']
+                    src_pixel_val: h5py.Dataset = src_pixels['count']
+                    nonzero_pixel_count: np.int64 = len(src_pixel_row)
+                    dst_file.flush()
+                    res_group.attrs.create(
+                        name='bins_count', data=src_bins_count)
+                    # Maximum count of stripes horizontally [covering rows 0..submatrix_size)
+                    stripes_count = len(stripes)
+                    all_rows_start_indices: h5py.Dataset = src_file[
+                        f'resolutions/{resolution}/indexes/bin1_offset']
 
-            for resolution_ord, resolution in enumerate(sorted(resolutions, reverse=True)):
-                with h5py.File(name=self.src_file_path, mode='r', swmr=True) as src_file:
-                    with self.progress_lock.gen_wlock():
-                        self.total_progress = float(
-                            max(0, (resolution_ord - 1))) / float(len(resolutions))
-                        print(f"Resolution {resolution} out of {resolutions}")
+                    print(
+                        f"bins_count: {src_bins_count}, "
+                        f"stripes_count: {stripes_count}, "
+                    )
 
-                    with output_file_lock, h5py.File(name=self.dst_file_path, mode='w', libver='earliest') as dst_file:
-                        stripes = self.dump_stripe_data(
-                            src_file,
-                            dst_file,
-                            submatrix_size,
-                            resolution,
-                            self.get_name_and_length_path(resolution),
-                            additional_dataset_creation_args
-                        )
-                        resolution_to_stripes[int(resolution)] = stripes
-                        dst_file['resolutions'].attrs.create(
-                            "hict_version", "0.1.3.1b")
-                        res_group: h5py.Group = dst_file.create_group(
-                            f'resolutions/{resolution}/treap_coo')
-                        res_group.attrs.create(
-                            name='dense_submatrix_size', data=submatrix_size)
-                        res_group.attrs.create(
-                            name='hdf5_max_chunk_size', data=hdf5_max_chunk_size)
-                        src_bins_count = len(
-                            src_file[f'resolutions/{resolution}/bins/end'])
-                        src_pixels = src_file[f'resolutions/{resolution}/pixels']
-                        src_pixel_row: h5py.Dataset = src_pixels['bin1_id']
-                        src_pixel_col: h5py.Dataset = src_pixels['bin2_id']
-                        src_pixel_val: h5py.Dataset = src_pixels['count']
-                        nonzero_pixel_count: np.int64 = len(src_pixel_row)
-                        res_group.attrs.create(
-                            name='bins_count', data=src_bins_count)
-                        # Maximum count of stripes horizontally [covering rows 0..submatrix_size)
-                        stripes_count = len(stripes)
-                        all_rows_start_indices: h5py.Dataset = src_file[
-                            f'resolutions/{resolution}/indexes/bin1_offset']
+                    ds_creation_args: dict = copy.deepcopy(
+                        additional_dataset_creation_args)
+                    ds_creation_args['chunks'] = True
 
-                        print(
-                            f"bins_count: {src_bins_count}, "
-                            f"stripes_count: {stripes_count}, "
-                        )
+                    block_rows: h5py.Dataset = res_group.create_dataset(
+                        'block_rows', shape=(nonzero_pixel_count,),
+                        dtype=np.int64,
+                        **ds_creation_args
+                    )
+                    block_cols: h5py.Dataset = res_group.create_dataset(
+                        'block_cols', shape=(nonzero_pixel_count,),
+                        dtype=np.int64,
+                        **ds_creation_args
+                    )
+                    block_vals: h5py.Dataset = res_group.create_dataset(
+                        'block_vals', shape=(nonzero_pixel_count,),
+                        dtype=src_pixel_val.dtype,
+                        **ds_creation_args
+                    )
+                    total_block_count: np.int64 = stripes_count * stripes_count
+                    block_offset: h5py.Dataset = res_group.create_dataset(
+                        'block_offset', shape=(total_block_count,),
+                        dtype=np.int64,
+                        **ds_creation_args
+                    )
+                    block_length: h5py.Dataset = res_group.create_dataset(
+                        'block_length', shape=(total_block_count,),
+                        dtype=np.int64,
+                        **ds_creation_args
+                    )
 
-                        ds_creation_args: dict = copy.deepcopy(
-                            additional_dataset_creation_args)
-                        ds_creation_args['chunks'] = True
+                    dense_blocks: h5py.Dataset = res_group.create_dataset(
+                        'dense_blocks',
+                        shape=(1, 1, submatrix_size, submatrix_size),
+                        maxshape=(None, 1, submatrix_size, submatrix_size),
+                        dtype=src_pixel_val.dtype,
+                        **ds_creation_args,
+                    )
 
-                        block_rows: h5py.Dataset = res_group.create_dataset(
-                            'block_rows', shape=(nonzero_pixel_count,),
-                            dtype=np.int64,
-                            **ds_creation_args
-                        )
-                        block_cols: h5py.Dataset = res_group.create_dataset(
-                            'block_cols', shape=(nonzero_pixel_count,),
-                            dtype=np.int64,
-                            **ds_creation_args
-                        )
-                        block_vals: h5py.Dataset = res_group.create_dataset(
-                            'block_vals', shape=(nonzero_pixel_count,),
-                            dtype=src_pixel_val.dtype,
-                            **ds_creation_args
-                        )
-                        total_block_count: np.int64 = stripes_count * stripes_count
-                        block_offset: h5py.Dataset = res_group.create_dataset(
-                            'block_offset', shape=(total_block_count,),
-                            dtype=np.int64,
-                            **ds_creation_args
-                        )
-                        block_length: h5py.Dataset = res_group.create_dataset(
-                            'block_length', shape=(total_block_count,),
-                            dtype=np.int64,
-                            **ds_creation_args
-                        )
+                    res_group.attrs.create(
+                        name='stripes_count', data=stripes_count)
+                    dst_file.flush()
 
-                        dense_blocks: h5py.Dataset = res_group.create_dataset(
-                            'dense_blocks',
-                            shape=(1, 1, submatrix_size, submatrix_size),
-                            maxshape=(None, 1, submatrix_size, submatrix_size),
-                            dtype=src_pixel_val.dtype,
-                            **ds_creation_args,
-                        )
+            arg_tuples = zip(
+                stripes_count *
+                (str(self.src_file_path),),
+                stripes_count *
+                (str(self.dst_file_path),),
+                stripes_count * (resolution,),
+                range(0, stripes_count),
+                stripes_count * (stripes_count,),
+                stripes_count * (submatrix_size,),
+                stripes_count *
+                (src_pixel_val.dtype,),
+                stripes_count *
+                (output_file_lock,),
+            )
 
-                        res_group.attrs.create(
-                            name='stripes_count', data=stripes_count)
-                        dst_file.flush()
+            with multiprocessing.Pool(self.converter_processes_count) as pool:
+                pool.map(convert_and_save_block_to_file,
+                            arg_tuples
+                            )
 
-                arg_tuples = zip(
-                    stripes_count *
-                    (str(self.src_file_path),),
-                    stripes_count *
-                    (str(self.dst_file_path),),
-                    stripes_count * (resolution,),
-                    range(0, stripes_count),
-                    stripes_count * (stripes_count,),
-                    stripes_count * (submatrix_size,),
-                    stripes_count *
-                    (src_pixel_val.dtype,),
-                    stripes_count *
-                    (output_file_lock,),
-                )
+        with output_file_lock, h5py.File(name=self.src_file_path, mode='r', swmr=True) as src_file, h5py.File(name=self.dst_file_path, mode='r+', libver='earliest') as dst_file:
+            contigs, contig_id_to_contig_length_bp = self.dump_contig_data(
+                src_file,
+                dst_file,
+                self.get_name_and_length_path(int(resolutions[0])),
+                resolutions,
+                resolution_to_stripes,
+                submatrix_size,
+                additional_dataset_creation_args
+            )
+            dst_file.flush()
 
-                with multiprocessing.Pool(self.converter_processes_count) as pool:
-                    pool.map(convert_and_save_block_to_file,
-                             arg_tuples
-                             )
-
-            with output_file_lock, h5py.File(name=self.src_file_path, mode='r', swmr=True) as src_file, h5py.File(name=self.dst_file_path, mode='r+', libver='earliest') as dst_file:
-                contigs, contig_id_to_contig_length_bp = self.dump_contig_data(
-                    src_file,
-                    dst_file,
-                    self.get_name_and_length_path(int(resolutions[0])),
-                    resolutions,
-                    resolution_to_stripes,
-                    submatrix_size,
-                    additional_dataset_creation_args
-                )
-
-        finally:
-            with self.progress_lock.gen_wlock():
-                self.converting = False
+        # finally:
+        with self.progress_lock.gen_wlock():
+            self.converting = False
 
 
 def main(cmdline: Optional[List[Any]]):
