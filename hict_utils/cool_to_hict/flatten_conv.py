@@ -124,7 +124,7 @@ def convert_and_save_block_to_file(
                 shape=(submatrix_size, submatrix_size)
             )
             dense = mx_coo.toarray()
-            with output_file_lock, h5py.File(dst_filename, mode='r+') as dst_file:
+            with output_file_lock, h5py.File(dst_filename, mode='r+', libver='earliest') as dst_file:
                 res_group = dst_file[f'resolutions/{resolution}/treap_coo']
                 block_rows_ds: h5py.Dataset = res_group['block_rows']
                 block_cols_ds: h5py.Dataset = res_group['block_cols']
@@ -140,7 +140,7 @@ def convert_and_save_block_to_file(
                 dense_blocks_ds[current_dense_offset,
                                 0, :, :] = dense
         else:
-            with output_file_lock, h5py.File(dst_filename, mode='r+') as dst_file:
+            with output_file_lock, h5py.File(dst_filename, mode='r+', libver='earliest') as dst_file:
                 res_group = dst_file[f'resolutions/{resolution}/treap_coo']
                 block_rows_ds: h5py.Dataset = res_group['block_rows']
                 block_cols_ds: h5py.Dataset = res_group['block_cols']
@@ -463,16 +463,17 @@ class CoolerToHiCTConverter(object):
                         lambda s: s.isnumeric(), src_file['resolutions'].keys())]
                 resolutions = tuple(map(int, resolutions))
 
+            resolution_to_stripes: Dict[int,
+                                                List[StripeDescriptor]] = dict()
+
             for resolution_ord, resolution in enumerate(sorted(resolutions, reverse=True)):
                 with h5py.File(name=self.src_file_path, mode='r', swmr=True) as src_file:
-                    resolution_to_stripes: Dict[int,
-                                                List[StripeDescriptor]] = dict()
                     with self.progress_lock.gen_wlock():
                         self.total_progress = float(
                             max(0, (resolution_ord - 1))) / float(len(resolutions))
                         print(f"Resolution {resolution} out of {resolutions}")
 
-                    with output_file_lock, h5py.File(name=self.dst_file_path, mode='w') as dst_file:
+                    with output_file_lock, h5py.File(name=self.dst_file_path, mode='w', libver='earliest') as dst_file:
                         stripes = self.dump_stripe_data(
                             src_file,
                             dst_file,
@@ -572,7 +573,7 @@ class CoolerToHiCTConverter(object):
                              arg_tuples
                              )
 
-            with output_file_lock, h5py.File(name=self.src_file_path, mode='r', swmr=True) as src_file, h5py.File(name=self.dst_file_path, mode='r+') as dst_file:
+            with output_file_lock, h5py.File(name=self.src_file_path, mode='r', swmr=True) as src_file, h5py.File(name=self.dst_file_path, mode='r+', libver='earliest') as dst_file:
                 contigs, contig_id_to_contig_length_bp = self.dump_contig_data(
                     src_file,
                     dst_file,
