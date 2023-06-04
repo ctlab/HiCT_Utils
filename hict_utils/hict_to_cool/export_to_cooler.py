@@ -25,6 +25,25 @@ from hict.core.chunked_file import ChunkedFile
 from hict.core.common import QueryLengthUnit, ScaffoldDescriptor
 
 import cooler
+
+# https://stackoverflow.com/questions/8906926/formatting-timedelta-objects
+from string import Template
+
+class DeltaTemplate(Template):
+    delimiter = "%"
+
+def strfdelta(tdelta, fmt):
+    d = {"D": tdelta.days}
+    hours, rem = divmod(tdelta.seconds, 3600)
+    minutes, seconds = divmod(rem, 60)
+    d["H"] = '{:02d}'.format(hours)
+    d["M"] = '{:02d}'.format(minutes)
+    d["S"] = '{:02d}'.format(seconds)
+    t = DeltaTemplate(fmt)
+    return t.substitute(**d)
+
+
+
 # import io
 # import csv
 
@@ -138,6 +157,8 @@ class HiCTToCoolerConverter(object):
             number_of_blocks_to_fetch: int = int(max(1, maximum_fetch_size_bytes // (
                 val_dtype_width_bytes * self.chunked_file.dense_submatrix_size[resolution] * self.chunked_file.dense_submatrix_size[resolution])))
 
+            start_time = datetime.now()
+
             def fetch_chunk(start_row_incl, start_col_incl):
                 #for start_row_incl in range(0, total_bin_length, self.chunked_file.dense_submatrix_size[resolution]):
                 end_row_excl = min(
@@ -162,22 +183,31 @@ class HiCTToCoolerConverter(object):
                 # coo_record_row = np.rec.array(sparse.row + start_row_incl, dtype=('row', row_dtype))
                 # coo_record_rcv = npr.append_fields(coo_record_row, data=(sparse.col, sparse.data), names=('col', 'val'), dtypes=(col_dtype, val_dtype), usemask=False, asrecarray=True)
                 ind = np.lexsort((cols, rows))
-                coo_chunk = pd.DataFrame.from_dict({
+                coo_chunk = dict({
                     'bin1_id': rows[ind],
                     'bin2_id': cols[ind],
                     'count': sparse.data[ind]
                 })
                 # print("Yielding chunk", flush=True)
                 #yield coo_chunk
-                print(f"Exported: {float(start_row_incl*total_bin_length + start_col_incl) / float(total_bin_length*total_bin_length)} Time: {datetime.now().strftime('%H:%M:%S')}", flush=True)
+                now = datetime.now()
+                progress = float(start_row_incl*total_bin_length + start_col_incl) / float(total_bin_length*total_bin_length)
+                print(f"Exported: {'{:.2f}'.format(100*progress)}%  Elapsed: {strfdelta(now - start_time, '%H:%M:%S')}", flush=True)
                 return coo_chunk
+            
+            def chunk_generator():
+                for start_row_incl in range(0, total_bin_length, self.chunked_file.dense_submatrix_size[resolution]):
+                    for start_col_incl in range(start_row_incl, total_bin_length, self.chunked_file.dense_submatrix_size[resolution] * number_of_blocks_to_fetch):
+                        chunk = fetch_chunk(start_row_incl, start_col_incl)
+                        if len(chunk['bin1_id']) > 0:
+                            yield chunk
 
             #pixels_generator=(fetch_chunk(start_row_incl, start_col_incl) for )
 
             cooler.create_cooler(
                 cool_uri=f"{str(self.output_file_path.absolute())}::/resolutions/{resolution}",
                 bins=bins,
-                pixels=(fetch_chunk(start_row_incl, start_col_incl) for start_row_incl in range(0, total_bin_length, self.chunked_file.dense_submatrix_size[resolution]) for start_col_incl in range(start_row_incl, total_bin_length, self.chunked_file.dense_submatrix_size[resolution] * number_of_blocks_to_fetch)),#fetch_chunk(),#(fetch_chunk(start_row_incl, start_col_incl) for),
+                pixels=chunk_generator(), #(fetch_chunk(start_row_incl, start_col_incl) for start_row_incl in range(0, total_bin_length, self.chunked_file.dense_submatrix_size[resolution]) for start_col_incl in range(start_row_incl, total_bin_length, self.chunked_file.dense_submatrix_size[resolution] * number_of_blocks_to_fetch)),#fetch_chunk(),#(fetch_chunk(start_row_incl, start_col_incl) for),
                 symmetric_upper=True,
                 ordered=False,
                 h5opts=ds_args
