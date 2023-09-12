@@ -78,7 +78,9 @@ class AssemblyExporter(object):
                 sequence = "".join(get_contigs_in_scaffold(scaffold))
                 record = SeqRecord(
                     seq=Seq(sequence),
-                    id=scaffold.name
+                    id=scaffold.name,
+                    description="",
+                    name=""
                 )
                 yield record
             
@@ -90,7 +92,7 @@ class AssemblyExporter(object):
             else:
                 raise RuntimeError(f"Unknown compression type: {compression}")
             
-            SeqIO.write(get_scaffold_records(), f, format="fasta")
+            SeqIO.write(get_scaffold_records(), f, format="fasta-2line")
                             
         finally:
             f.close()
