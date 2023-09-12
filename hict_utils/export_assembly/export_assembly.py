@@ -105,7 +105,7 @@ def main(cmdline: Optional[List[Any]]):
     parser.add_argument("-c", "--compression", default="gzip", choices=[
                         "gzip", "none"], dest="compression", help="Output FASTA compression algorithm")
     parser.add_argument("-a", "--agp", required=True, dest="agp_file", type=Path, help="AGP file with assembly")
-    parser.add_argument("-l", "--compression-level", dest="level", type=int, default=9, help="Compression level")
+    parser.add_argument("-l", "--compression-level", dest="level", type=int, default=4, help="Compression level")
     parser.add_argument("input", help="Input FASTA file path (uncompressed or gzip-compressed with file name ending in .gz)",
                         type=Path)
     parser.add_argument(
