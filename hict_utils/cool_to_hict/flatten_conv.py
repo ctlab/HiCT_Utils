@@ -12,6 +12,8 @@ from hict.core.common import ContigDirection, ContigHideType, ContigDescriptor, 
 
 from readerwriterlock import rwlock
 
+import tqdm
+
 import multiprocessing
 import multiprocessing.managers
 
@@ -134,7 +136,7 @@ class CoolerToHiCTConverter(object):
                     ]
                 ) if bin_weights is not None else np.ones(submatrix_size, dtype=np.float64)
             )
-            for stripe_index in range(stripe_count)
+            for stripe_index in tqdm.tqdm(range(stripe_count), desc="Generating stripe descriptors", leave=False, dynamic_ncols=True)
         ]
 
         if additional_dataset_creation_args is None:
@@ -257,7 +259,7 @@ class CoolerToHiCTConverter(object):
                     0,
                     submatrix_size,
                     ATUDirection.FORWARD
-                ) for part in range(equal_parts_count)
+                ) for part in tqdm.tqdm(range(equal_parts_count), desc="Generating ATUs", leave=False, dynamic_ncols=True)
             ))
 
             start_bin += (len(atus)-1)*submatrix_size
@@ -293,7 +295,7 @@ class CoolerToHiCTConverter(object):
                 atus={resolution: generate_atus_for_contig(
                     contig_id, resolution) for resolution in resolutions},
                 # scaffold_id=None
-            ) for contig_id in range(0, contig_count)
+            ) for contig_id in tqdm.tqdm(range(0, contig_count), desc="Generating contig descriptors", leave=False, dynamic_ncols=True)
         ]
 
         for resolution in resolutions:
@@ -405,10 +407,10 @@ class CoolerToHiCTConverter(object):
                 with h5py.File(name=self.dst_file_path, mode='w') as dst_file:
                     resolution_to_stripes: Dict[np.int64,
                                                 List[StripeDescriptor]] = dict()
-                    for resolution_ord, resolution in enumerate(sorted(resolutions, reverse=True)):
+                    for resolution_ord, resolution in tqdm.tqdm(enumerate(sorted(resolutions, reverse=True)), position=1, total=len(resolutions), desc="Resolutions", leave=False, dynamic_ncols=True):
                         with self.progress_lock.gen_wlock():
                             self.total_progress = float(max(0, (resolution_ord - 1))) / float(len(resolutions))
-                        print(f"Resolution {resolution} out of {resolutions}")
+                        # print(f"Resolution {resolution} out of {resolutions}")
                         stripes = self.dump_stripe_data(
                             src_file,
                             dst_file,
@@ -440,10 +442,10 @@ class CoolerToHiCTConverter(object):
                         all_rows_start_indices: h5py.Dataset = src_file[
                             f'resolutions/{resolution}/indexes/bin1_offset']
 
-                        print(
-                            f"bins_count: {src_bins_count}, "
-                            f"stripes_count: {stripes_count}, "
-                        )
+                        # print(
+                        #     f"bins_count: {src_bins_count}, "
+                        #     f"stripes_count: {stripes_count}, "
+                        # )
 
                         ds_creation_args: dict = copy.deepcopy(
                             additional_dataset_creation_args)
@@ -493,7 +495,7 @@ class CoolerToHiCTConverter(object):
                         current_sparse_offset: np.int64 = 0
                         current_dense_offset: np.int64 = 0
 
-                        for vstripe_l in range(0, stripes_count):
+                        for vstripe_l in tqdm.tqdm(range(0, stripes_count), position=0, desc="Stripes", leave=False, dynamic_ncols=True):
                             with self.progress_lock.gen_wlock():
                                 self.resolution_progress = float(max(0, vstripe_l - 1)) / float(stripes_count)
                             singlerowstripe_pixel_row, singlerowstripe_pixel_col, singlerowstripe_pixel_val = (
@@ -505,7 +507,7 @@ class CoolerToHiCTConverter(object):
                                     (vstripe_l+1)*submatrix_size, len(all_rows_start_indices)-1)]],
                             )
                             if len(singlerowstripe_pixel_row) <= 0:
-                                print("Zero-length stripe subarray")
+                                # print("Zero-length stripe subarray")
                                 continue
                             pixel_row_stripes = singlerowstripe_pixel_row // submatrix_size
                             pixel_col_stripes = singlerowstripe_pixel_col // submatrix_size

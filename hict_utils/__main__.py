@@ -3,10 +3,12 @@ import sys
 from typing import Callable, Dict
 from hict_utils.hict_to_cool import export_to_cooler
 from hict_utils.cool_to_hict import flatten_conv
+from hict_utils.export_assembly import export_assembly
 
 commands_entrypoints: Dict[str, Callable] = {
     'convert': flatten_conv.main,
-    'export': export_to_cooler.main
+    'export': export_to_cooler.main,
+    'assemble': export_assembly.main
 }
 
 
