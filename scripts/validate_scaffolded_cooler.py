@@ -51,6 +51,8 @@ def parse_agp(path: Path) -> list[AgpComponent]:
             if not stripped or stripped.startswith("#"):
                 continue
             fields = stripped.split()
+            if len(fields) == 8 and fields[4].upper() in {"W", "A", "D", "F", "G", "O", "P"}:
+                fields.append("+")
             if len(fields) < 9:
                 raise ValueError(f"{path}:{line_no}: expected at least 9 AGP columns")
             if fields[4].upper() in {"N", "U"}:
@@ -129,6 +131,11 @@ def fetch_dense(c: cooler.Cooler, chrom: str, start: int, end: int) -> np.ndarra
     return np.asarray(matrix)
 
 
+def fetch_dense_bins(c: cooler.Cooler, start_bin: int, end_bin: int) -> np.ndarray:
+    matrix = c.matrix(balance=False, sparse=False)[start_bin:end_bin, start_bin:end_bin]
+    return np.asarray(matrix)
+
+
 def validate_component_windows(
     source: cooler.Cooler,
     exported: cooler.Cooler,
@@ -139,39 +146,59 @@ def validate_component_windows(
 ) -> list[str]:
     rng = random.Random(seed)
     source_sizes = chrom_sizes(source)
+    max_requested_bins = max(1, max_bins)
     candidate_components = [
         component
         for component in components
         if component.orientation in {"+", "1"}
         and component.component in source_sizes
-        and component.length >= exported.binsize * 2
+        and component.length >= exported.binsize * 3
     ]
     if not candidate_components:
-        return ["No positive-orientation AGP components with source Cooler chromosomes were available for window validation"]
+        return [
+            "No positive-orientation AGP components with enough interior source Cooler bins were available "
+            "for window validation"
+        ]
 
     errors: list[str] = []
     for query_idx in range(queries):
         component = rng.choice(candidate_components)
-        bins = max(1, min(max_bins, component.length // exported.binsize))
-        window_bp = bins * exported.binsize
-        offset = 0 if component.length == window_bp else rng.randrange(0, component.length - window_bp + 1, exported.binsize)
-        scaffold_start = component.scaffold_start0 + offset
-        component_start = component.component_start0 + offset
-        scaffold_end = scaffold_start + window_bp
-        component_end = component_start + window_bp
+        target_extent = exported.extent(component.scaffold)
+        source_extent = source.extent(component.component)
+        target_component_start_bin = target_extent[0] + component.scaffold_start0 // exported.binsize
+        source_component_start_bin = source_extent[0] + component.component_start0 // source.binsize
+        component_bins = max(1, (component.length + exported.binsize - 1) // exported.binsize)
+        component_bins = min(
+            component_bins,
+            target_extent[1] - target_component_start_bin,
+            source_extent[1] - source_component_start_bin,
+        )
+        # AGP starts/gaps are often not aligned to the Cooler resolution. The
+        # first and last target bins of a component can therefore legitimately
+        # aggregate contacts from neighboring components. Strict equality to a
+        # single source chromosome bin is only expected for interior bins.
+        interior_bins = component_bins - 2
+        if interior_bins <= 0:
+            continue
+        bins = min(max_requested_bins, interior_bins)
+        offset_bins = 0 if interior_bins == bins else rng.randrange(0, interior_bins - bins + 1)
+        target_start_bin = target_component_start_bin + 1 + offset_bins
+        source_start_bin = source_component_start_bin + 1 + offset_bins
+        target_end_bin = target_start_bin + bins
+        source_end_bin = source_start_bin + bins
         try:
-            observed = fetch_dense(exported, component.scaffold, scaffold_start, scaffold_end)
-            expected = fetch_dense(source, component.component, component_start, component_end)
+            observed = fetch_dense_bins(exported, target_start_bin, target_end_bin)
+            expected = fetch_dense_bins(source, source_start_bin, source_end_bin)
         except Exception as exc:  # noqa: BLE001 - report exact user-facing region
             errors.append(
-                f"Query {query_idx}: failed to fetch {component.scaffold}:{scaffold_start}-{scaffold_end} "
-                f"or {component.component}:{component_start}-{component_end}: {exc}"
+                f"Query {query_idx}: failed to fetch {component.scaffold} bins {target_start_bin}:{target_end_bin} "
+                f"or {component.component} bins {source_start_bin}:{source_end_bin}: {exc}"
             )
             continue
         if observed.shape != expected.shape or not np.array_equal(observed, expected):
             errors.append(
-                f"Query {query_idx}: raw matrix mismatch for {component.scaffold}:{scaffold_start}-{scaffold_end} "
-                f"vs {component.component}:{component_start}-{component_end}; "
+                f"Query {query_idx}: raw matrix mismatch for {component.scaffold} bins {target_start_bin}:{target_end_bin} "
+                f"vs {component.component} bins {source_start_bin}:{source_end_bin}; "
                 f"observed_shape={observed.shape}, expected_shape={expected.shape}"
             )
     return errors
